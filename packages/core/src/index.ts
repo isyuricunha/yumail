@@ -1,5 +1,13 @@
 import type { AiActions } from "@yumail/ai";
-import type { MailProvider } from "@yumail/mail";
+import type {
+  MailMetadataRepository,
+  ProviderSyncState,
+  StoredJmapAccountConfig
+} from "@yumail/db";
+import type { Mailbox, Message, MailProvider } from "@yumail/mail";
+import { JmapProvider } from "@yumail/mail";
+import type { EntityId } from "@yumail/shared";
+import { YuMailError, createStableEntityId, toIsoDateTime } from "@yumail/shared";
 
 export interface YuMailServices {
   mailProvider: MailProvider;
@@ -20,4 +28,275 @@ export function createFoundationBootstrapState(): AppBootstrapState {
     aiManualByDefault: true,
     remoteImagesBlockedByDefault: true
   };
+}
+
+export interface SecretStorageAdapter {
+  getSecret(reference: string): Promise<string | null>;
+  setSecret(reference: string, value: string): Promise<void>;
+  deleteSecret(reference: string): Promise<void>;
+}
+
+export interface JmapAccountSetupInput {
+  displayName: string;
+  emailAddress: string;
+  jmapBaseUrl: string;
+  authSecret: string;
+}
+
+export interface JmapConnectionTestResult {
+  ok: boolean;
+  message: string;
+  mailboxes: Mailbox[];
+  jmapAccountId?: string;
+  sessionUrl?: string;
+}
+
+export interface MailAccountState {
+  accountConfig?: StoredJmapAccountConfig;
+  mailboxes: Mailbox[];
+  inboxMessages: Message[];
+  inboxMailboxId?: EntityId;
+}
+
+export interface MailAccountService {
+  loadState(): Promise<MailAccountState>;
+  testJmapConnection(input: JmapAccountSetupInput): Promise<JmapConnectionTestResult>;
+  saveJmapAccount(input: JmapAccountSetupInput): Promise<MailAccountState>;
+  refreshInbox(accountId?: EntityId): Promise<MailAccountState>;
+}
+
+export interface CreateMailAccountServiceInput {
+  metadataRepository: MailMetadataRepository;
+  secretStorage: SecretStorageAdapter;
+  fetch?: typeof fetch;
+}
+
+export function createMailAccountService(input: CreateMailAccountServiceInput): MailAccountService {
+  return new DefaultMailAccountService(input);
+}
+
+class DefaultMailAccountService implements MailAccountService {
+  private readonly metadataRepository: MailMetadataRepository;
+  private readonly secretStorage: SecretStorageAdapter;
+  private readonly fetchImpl?: typeof fetch;
+
+  constructor(input: CreateMailAccountServiceInput) {
+    this.metadataRepository = input.metadataRepository;
+    this.secretStorage = input.secretStorage;
+    this.fetchImpl = input.fetch;
+  }
+
+  async loadState(): Promise<MailAccountState> {
+    const [accountConfig] = await this.metadataRepository.listAccountConfigs();
+
+    if (!accountConfig) {
+      return {
+        mailboxes: [],
+        inboxMessages: []
+      };
+    }
+
+    return this.loadCachedState(accountConfig);
+  }
+
+  async testJmapConnection(input: JmapAccountSetupInput): Promise<JmapConnectionTestResult> {
+    try {
+      const accountId = this.createAccountId(input);
+      const provider = this.createProvider(accountId, input, input.authSecret);
+      const connectionInfo = await provider.discoverSession();
+      const mailboxes = await provider.listMailboxes(accountId);
+
+      return {
+        ok: true,
+        message: `Connected to ${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}.`,
+        mailboxes,
+        jmapAccountId: connectionInfo.jmapAccountId,
+        sessionUrl: connectionInfo.sessionUrl
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: getErrorMessage(error),
+        mailboxes: []
+      };
+    }
+  }
+
+  async saveJmapAccount(input: JmapAccountSetupInput): Promise<MailAccountState> {
+    const now = toIsoDateTime();
+    const accountId = this.createAccountId(input);
+    const credentialReference = this.createCredentialReference(input);
+    const provider = this.createProvider(accountId, input, input.authSecret);
+    const connectionInfo = await provider.discoverSession();
+    const mailboxes = await provider.listMailboxes(accountId);
+    const inboxMailbox = findInboxMailbox(mailboxes);
+    const inboxMessages = inboxMailbox
+      ? (await provider.listMessages({
+        accountId,
+        mailboxId: inboxMailbox.id,
+        page: { limit: 25 }
+      })).items
+      : [];
+
+    await this.secretStorage.setSecret(credentialReference, input.authSecret);
+
+    const accountConfig: StoredJmapAccountConfig = {
+      account: {
+        id: accountId,
+        displayName: input.displayName.trim(),
+        emailAddress: input.emailAddress.trim(),
+        providerType: "jmap",
+        providerConfigReference: createStableEntityId("provider-config", [
+          input.emailAddress,
+          input.jmapBaseUrl
+        ]),
+        isDefault: true,
+        createdAt: now,
+        updatedAt: now
+      },
+      jmapBaseUrl: input.jmapBaseUrl.trim(),
+      credentialReference,
+      jmapAccountId: connectionInfo.jmapAccountId,
+      sessionApiUrl: connectionInfo.session.apiUrl,
+      lastConnectedAt: now
+    };
+
+    await this.metadataRepository.saveAccountConfig(accountConfig);
+    await this.metadataRepository.saveMailboxes(accountId, mailboxes);
+
+    if (inboxMailbox) {
+      await this.metadataRepository.saveMessages(inboxMailbox.id, inboxMessages);
+      await this.metadataRepository.saveSyncState(this.createSyncState(accountId, inboxMailbox.id, now));
+    }
+
+    return {
+      accountConfig,
+      mailboxes,
+      inboxMessages,
+      inboxMailboxId: inboxMailbox?.id
+    };
+  }
+
+  async refreshInbox(accountId?: EntityId): Promise<MailAccountState> {
+    const accountConfigs = await this.metadataRepository.listAccountConfigs();
+    const accountConfig = accountId
+      ? accountConfigs.find((candidate) => candidate.account.id === accountId)
+      : accountConfigs[0];
+
+    if (!accountConfig) {
+      return {
+        mailboxes: [],
+        inboxMessages: []
+      };
+    }
+
+    const secret = await this.secretStorage.getSecret(accountConfig.credentialReference);
+
+    if (!secret) {
+      throw new YuMailError({
+        code: "missing_jmap_secret",
+        message: "JMAP credentials are missing from secure storage."
+      });
+    }
+
+    const provider = this.createProvider(
+      accountConfig.account.id,
+      {
+        displayName: accountConfig.account.displayName,
+        emailAddress: accountConfig.account.emailAddress,
+        jmapBaseUrl: accountConfig.jmapBaseUrl,
+        authSecret: secret
+      },
+      secret
+    );
+    const mailboxes = await provider.listMailboxes(accountConfig.account.id);
+    const inboxMailbox = findInboxMailbox(mailboxes);
+    const inboxMessages = inboxMailbox
+      ? (await provider.listMessages({
+        accountId: accountConfig.account.id,
+        mailboxId: inboxMailbox.id,
+        page: { limit: 25 }
+      })).items
+      : [];
+    const now = toIsoDateTime();
+
+    await this.metadataRepository.saveMailboxes(accountConfig.account.id, mailboxes);
+
+    if (inboxMailbox) {
+      await this.metadataRepository.saveMessages(inboxMailbox.id, inboxMessages);
+      await this.metadataRepository.saveSyncState(
+        this.createSyncState(accountConfig.account.id, inboxMailbox.id, now)
+      );
+    }
+
+    return {
+      accountConfig,
+      mailboxes,
+      inboxMessages,
+      inboxMailboxId: inboxMailbox?.id
+    };
+  }
+
+  private async loadCachedState(accountConfig: StoredJmapAccountConfig): Promise<MailAccountState> {
+    const mailboxes = await this.metadataRepository.getMailboxes(accountConfig.account.id);
+    const inboxMailbox = findInboxMailbox(mailboxes);
+    const inboxMessages = inboxMailbox
+      ? await this.metadataRepository.getMessages(inboxMailbox.id)
+      : [];
+
+    return {
+      accountConfig,
+      mailboxes,
+      inboxMessages,
+      inboxMailboxId: inboxMailbox?.id
+    };
+  }
+
+  private createProvider(
+    accountId: EntityId,
+    input: JmapAccountSetupInput,
+    authSecret: string
+  ): JmapProvider {
+    return new JmapProvider({
+      localAccountId: accountId,
+      emailAddress: input.emailAddress,
+      baseUrl: input.jmapBaseUrl,
+      authSecret,
+      fetch: this.fetchImpl
+    });
+  }
+
+  private createAccountId(input: JmapAccountSetupInput): EntityId {
+    return createStableEntityId("account", [input.emailAddress, input.jmapBaseUrl]);
+  }
+
+  private createCredentialReference(input: JmapAccountSetupInput): string {
+    return createStableEntityId("credential", ["jmap", input.emailAddress, input.jmapBaseUrl]);
+  }
+
+  private createSyncState(accountId: EntityId, mailboxId: EntityId, now: string): ProviderSyncState {
+    return {
+      id: createStableEntityId("sync", [accountId, mailboxId]),
+      accountId,
+      mailboxId,
+      providerType: "jmap",
+      syncStatus: "idle",
+      lastSyncAt: now,
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+}
+
+function findInboxMailbox(mailboxes: Mailbox[]): Mailbox | undefined {
+  return mailboxes.find((mailbox) => mailbox.role === "inbox")
+    ?? mailboxes.find((mailbox) => mailbox.name.toLowerCase() === "inbox");
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Could not connect to the JMAP server.";
 }

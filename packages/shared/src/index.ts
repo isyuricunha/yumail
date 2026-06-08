@@ -70,3 +70,15 @@ export const SYSTEM_TAGS = [
 ] as const;
 
 export type SystemTag = (typeof SYSTEM_TAGS)[number];
+
+export function createStableEntityId(prefix: string, parts: readonly string[]): EntityId {
+  const normalizedParts = parts
+    .map((part) => encodeURIComponent(part.trim().toLowerCase()))
+    .filter(Boolean);
+
+  return `${prefix}:${normalizedParts.join(":")}`;
+}
+
+export function toIsoDateTime(date = new Date()): IsoDateTime {
+  return date.toISOString();
+}

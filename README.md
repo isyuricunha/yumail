@@ -69,6 +69,18 @@ packages/
 - SQLite migration draft for accounts, mailboxes, messages, threads, attachments, AI artifacts, sync state, and preferences.
 - Boundary check that blocks Tauri imports in shared core packages and direct `invoke` calls in React source.
 
+## Current JMAP Account Path
+
+Milestone 1 adds a first read-only JMAP path:
+
+- Settings can save a Stalwart/JMAP account.
+- Connection testing validates JMAP session discovery and mailbox access.
+- Mailboxes and initial Inbox message metadata load through `MailProvider`.
+- JMAP message metadata is normalized into YuMail `Message` objects.
+- Account, mailbox, message, and sync metadata persist locally through a repository interface.
+
+Secrets are not stored in ordinary SQLite rows. Full OS keychain/Stronghold storage is still pending; until then the desktop app uses the platform secure-storage abstraction first and falls back to an explicit development-only localStorage adapter with an in-app warning.
+
 ## Important Guardrails
 
 - Secrets are referenced by secure-storage keys, not stored in ordinary SQLite rows.

@@ -4,7 +4,7 @@ This roadmap maps the PRD milestones to implementation order. Milestone 0 is int
 
 ## Milestone 0 - Foundation
 
-Status: in progress.
+Status: implemented.
 
 - Monorepo and pnpm workspace.
 - Shared TypeScript config.
@@ -23,6 +23,8 @@ Acceptance:
 
 ## Milestone 1 - JMAP Account
 
+Status: implemented for initial read-only metadata listing.
+
 - Stalwart/JMAP account settings.
 - Secure credential storage selection and implementation.
 - JMAP session discovery.
@@ -35,6 +37,12 @@ Acceptance:
 
 - A user can connect one Stalwart/JMAP account.
 - Inbox metadata loads through `MailProvider`, not React components.
+
+Remaining hardening:
+
+- replace the development secure-storage fallback with OS keychain or Stronghold.
+- replace desktop localStorage metadata persistence with SQLite repositories.
+- verify against a live Stalwart server and GUI Tauri runtime.
 
 ## Milestone 2 - Read And Render
 

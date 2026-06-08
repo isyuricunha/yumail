@@ -213,6 +213,17 @@
   text-align: center;
 }
 
+.empty-panel {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--ym-space-3);
+  min-height: 220px;
+  padding: var(--ym-space-5);
+  color: var(--ym-color-text-muted);
+  text-align: center;
+}
+
 .thread-empty p {
   max-width: 440px;
 }
@@ -228,6 +239,31 @@
 .compose-form {
   display: grid;
   gap: var(--ym-space-3);
+  padding: var(--ym-space-4);
+}
+
+.settings-form {
+  display: grid;
+  gap: var(--ym-space-3);
+  border-bottom: 1px solid var(--ym-color-border);
+  padding: var(--ym-space-4);
+}
+
+.field-stack {
+  display: grid;
+  gap: var(--ym-space-2);
+}
+
+.settings-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ym-space-2);
+}
+
+.settings-status {
+  display: grid;
+  gap: var(--ym-space-3);
+  border-bottom: 1px solid var(--ym-color-border);
   padding: var(--ym-space-4);
 }
 

@@ -90,6 +90,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@yumail/mail':
+        specifier: workspace:*
+        version: link:../mail
       '@yumail/shared':
         specifier: workspace:*
         version: link:../shared

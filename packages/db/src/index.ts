@@ -1,3 +1,6 @@
+import type { Account, Mailbox, Message } from "@yumail/mail";
+import type { EntityId, IsoDateTime, ProviderType } from "@yumail/shared";
+
 export interface Migration {
   version: number;
   name: string;
@@ -31,3 +34,51 @@ export const requiredTables = [
 ] as const;
 
 export type RequiredTable = (typeof requiredTables)[number];
+
+export interface StoredJmapAccountConfig {
+  account: Account;
+  jmapBaseUrl: string;
+  credentialReference: string;
+  jmapAccountId?: string;
+  sessionApiUrl?: string;
+  lastConnectedAt?: IsoDateTime;
+}
+
+export interface ProviderSyncState {
+  id: EntityId;
+  accountId: EntityId;
+  mailboxId?: EntityId;
+  providerType: ProviderType;
+  syncCursor?: string;
+  syncStatus: "idle" | "syncing" | "error";
+  lastSyncAt?: IsoDateTime;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+}
+
+export interface MailMetadataSnapshot {
+  accountConfigs: StoredJmapAccountConfig[];
+  mailboxesByAccountId: Record<EntityId, Mailbox[]>;
+  messagesByMailboxId: Record<EntityId, Message[]>;
+  syncStates: ProviderSyncState[];
+}
+
+export interface MailMetadataRepository {
+  loadSnapshot(): Promise<MailMetadataSnapshot>;
+  listAccountConfigs(): Promise<StoredJmapAccountConfig[]>;
+  saveAccountConfig(accountConfig: StoredJmapAccountConfig): Promise<void>;
+  saveMailboxes(accountId: EntityId, mailboxes: Mailbox[]): Promise<void>;
+  getMailboxes(accountId: EntityId): Promise<Mailbox[]>;
+  saveMessages(mailboxId: EntityId, messages: Message[]): Promise<void>;
+  getMessages(mailboxId: EntityId): Promise<Message[]>;
+  saveSyncState(syncState: ProviderSyncState): Promise<void>;
+}
+
+export function createEmptyMailMetadataSnapshot(): MailMetadataSnapshot {
+  return {
+    accountConfigs: [],
+    mailboxesByAccountId: {},
+    messagesByMailboxId: {},
+    syncStates: []
+  };
+}

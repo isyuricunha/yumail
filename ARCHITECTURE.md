@@ -36,6 +36,15 @@ Owns product orchestration contracts and service composition. It coordinates mai
 
 It must not import Tauri, React DOM, or React Native.
 
+Milestone 1 adds `MailAccountService`, which coordinates:
+
+- JMAP account setup.
+- connection testing.
+- mailbox listing.
+- initial Inbox metadata loading.
+- local metadata repository writes.
+- secret-storage references.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -43,7 +52,7 @@ Owns normalized mail provider contracts.
 Current provider surfaces:
 
 - `MailProvider`
-- `JmapProvider` placeholder for the MVP provider.
+- `JmapProvider` for read-only JMAP session discovery, mailbox listing, and message metadata listing.
 - `ImapSmtpProvider` placeholder for future generic IMAP/SMTP.
 
 The UI must consume normalized YuMail models, not protocol-specific JMAP or IMAP data.
@@ -67,6 +76,8 @@ Current action contracts:
 Owns SQLite schema and future repositories. The initial migration stores provider metadata, message cache data, AI artifacts, sync state, and preferences.
 
 Secrets are not stored directly. Tables use references such as `provider_config_reference` and `api_key_reference`.
+
+The first desktop repository implementation is local metadata persistence in `apps/desktop` behind the `MailMetadataRepository` contract. Replacing it with SQLite repositories should not affect React feature components.
 
 ### `packages/renderer`
 
@@ -98,6 +109,8 @@ Owns Tauri-specific TypeScript adapters:
 - app storage
 
 This is the only package allowed to import `@tauri-apps/*`.
+
+Desktop credential storage currently tries the platform secure-storage adapter and falls back to a warning-heavy development localStorage adapter until an OS keychain or Stronghold adapter is configured.
 
 ## Enforced Rules
 

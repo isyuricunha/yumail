@@ -6,9 +6,11 @@
   "packageManager": "pnpm@11.4.0",
   "scripts": {
     "dev": "pnpm --filter @yumail/desktop tauri:dev",
-    "build": "pnpm -r --filter './packages/**' build && pnpm --filter @yumail/desktop build",
+    "build": "pnpm build:packages && pnpm --filter @yumail/desktop build",
+    "build:packages": "pnpm -r --filter './packages/**' build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
+    "test": "pnpm build:packages && node --test packages/mail/test/*.test.mjs packages/core/test/*.test.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm check:boundaries",
     "check:boundaries": "node scripts/check-boundaries.mjs"
   },
