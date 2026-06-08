@@ -126,6 +126,27 @@ Secrets are not stored in SQLite rows or ordinary browser storage. Account recor
 only a credential reference. The Tauri secure-storage adapter resolves that reference
 through Windows Credential Manager, macOS Keychain, or Linux Secret Service.
 
+The JMAP base URL field accepts any of these formats:
+
+- `example.com`
+- `mail.example.com`
+- `https://example.com`
+- `https://mail.example.com`
+- `https://mail.example.com/`
+- `https://mail.example.com/.well-known/jmap`
+- `https://mail.example.com/jmap/session`
+
+Discovery trims the value, assumes `https://` when the scheme is omitted, tries direct
+session URLs as-is, tries `/.well-known/jmap` for root URLs, and falls back to
+`/jmap/session`. Redirects are followed manually for 301, 302, 303, 307, and 308.
+Authorization is preserved only across same-origin redirects.
+
+Connection diagnostics show attempted URLs, status codes, redirect targets, final URLs,
+JSON/session validation status, whether auth was sent, and a safe user-facing failure
+category. They never display credentials. A real Stalwart regression covered by tests:
+`https://mail.yuricunha.com/.well-known/jmap` redirects to `/jmap/session`; this is
+handled generically without hardcoding that domain.
+
 ## Current Message Reading Path
 
 Milestone 2 adds safe Inbox message reading:
@@ -146,7 +167,7 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001 through 0004.
+- Rust registers migrations 0001 through 0005.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
   tags, body cache, attachments, local drafts, sync states, and preferences persist in
@@ -175,6 +196,11 @@ On Windows, verify secure storage through Credential Manager:
 3. Open Windows Credential Manager and check for a YuMail credential entry.
 4. Confirm `yumail.sqlite3` contains account metadata and credential references only,
    not secret values.
+
+JMAP HTTP in the Tauri desktop runtime goes through a platform adapter backed by a Rust
+HTTP command, not WebView `fetch`. This keeps JMAP discovery and API calls out of
+browser CORS policy while preserving the shared `fetch`-compatible boundary used by
+`packages/mail`.
 
 ## Tauri Desktop Assets
 

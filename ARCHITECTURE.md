@@ -83,6 +83,18 @@ The UI must consume normalized YuMail models, not protocol-specific JMAP or IMAP
 JMAP `Email/get` body structures and values are normalized into `MessageDetail`,
 `MessageBodyPart`, and `Attachment` models before they leave this package.
 
+JMAP session discovery is generic and domain-agnostic. `JmapProvider` accepts a domain,
+base URL, well-known URL, or direct session URL. It normalizes missing schemes to
+`https://`, tries `/.well-known/jmap` before `/jmap/session` for root inputs, follows
+301, 302, 303, 307, and 308 redirects manually, and only preserves Authorization on
+same-origin redirects. A discovered account stores both the canonical session URL and
+the JMAP `apiUrl` from the session object.
+
+Discovery diagnostics are part of the provider result and error cause. They include
+attempted URLs, HTTP status, redirect target, final URL, JSON validation state, missing
+session fields, auth-sent state, and safe error category. They never include password,
+token, or Authorization header values.
+
 JMAP submission remains fully inside `JmapProvider`:
 
 1. The account is checked for `urn:ietf:params:jmap:submission`, and submission
@@ -145,8 +157,9 @@ Milestone 2 adds a one-to-one `message_bodies` cache keyed by `message_id` with 
 Body-part structure is stored as metadata JSON without duplicating body payloads.
 
 Milestone 2.5 adds `jmap_account_configs` for JMAP URLs, discovered provider IDs, and
-credential references. Secret values are never stored in this table or any other SQLite
-table.
+credential references. Migration 0005 adds the canonical discovered session URL
+separately from the JMAP session `apiUrl`. Secret values are never stored in this table
+or any other SQLite table.
 
 Milestone 3 adds `local_drafts`. Local drafts contain account and reply references,
 recipient JSON, subject, plain-text body, and timestamps. They are local-only and are
@@ -192,6 +205,7 @@ Owns Tauri-specific TypeScript adapters:
 - notifications
 - opener
 - app storage
+- HTTP
 
 This is the only package allowed to import `@tauri-apps/*`.
 
@@ -210,9 +224,15 @@ store is unavailable, account save/refresh fails with a clear error. Stronghold 
 used because YuMail does not yet have a safe user-managed vault-password lifecycle;
 hardcoding or storing that password beside the vault would weaken the design.
 
+The HTTP adapter exposes a `fetch`-compatible boundary backed by the Rust `http_fetch`
+command and `reqwest` with automatic redirects disabled. Core and mail packages receive
+that function through dependency injection, so JMAP discovery and API requests do not
+depend on WebView/browser CORS policy. Redirect policy and auth forwarding remain in
+`packages/mail`, not in React or Rust business logic.
+
 ### Desktop Database Initialization
 
-Rust registers migrations 0001 through 0004 with the SQL plugin for
+Rust registers migrations 0001 through 0005 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 

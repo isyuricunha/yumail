@@ -1184,8 +1184,7 @@ function SettingsScreen({
           <Input
             value={formState.jmapBaseUrl}
             onChange={(event) => updateFormField("jmapBaseUrl", event.target.value)}
-            placeholder="https://mail.example.com"
-            type="url"
+            placeholder="mail.example.com or https://mail.example.com/jmap/session"
             required
           />
         </label>
@@ -1230,6 +1229,8 @@ function SettingsScreen({
         <Typography variant="caption" muted>{DESKTOP_SECURE_STORAGE_STATUS}</Typography>
       </div>
 
+      <DiagnosticsPanel connectionTest={connectionTest} />
+
       <div className="status-list">
         <StatusRow
           icon={mailState.accountConfig ? CheckCircle2 : Clock3}
@@ -1248,6 +1249,55 @@ function SettingsScreen({
         />
       </div>
     </Surface>
+  );
+}
+
+function DiagnosticsPanel({
+  connectionTest
+}: {
+  connectionTest?: JmapConnectionTestResult;
+}) {
+  const diagnostics = connectionTest?.diagnostics;
+
+  if (!diagnostics) {
+    return null;
+  }
+
+  return (
+    <div className="diagnostics-panel">
+      <Typography as="h3" variant="small">Connection diagnostics</Typography>
+      <Typography variant="caption" muted>{diagnostics.message}</Typography>
+      {connectionTest?.sessionUrl ? (
+        <Typography variant="caption" muted>
+          Session: {connectionTest.sessionUrl}
+        </Typography>
+      ) : null}
+      {connectionTest?.apiUrl ? (
+        <Typography variant="caption" muted>
+          API: {connectionTest.apiUrl}
+        </Typography>
+      ) : null}
+      <div className="diagnostics-list">
+        {diagnostics.attemptedUrls.map((attempt, index) => (
+          <div className="diagnostics-item" key={`${attempt.url}-${index}`}>
+            <Typography variant="caption">
+              {attempt.status ? `${attempt.status} ` : ""}
+              {attempt.url}
+            </Typography>
+            <Typography variant="caption" muted>
+              Auth {attempt.authSent ? "sent" : "not sent"}
+              {attempt.redirectTarget ? ` · Redirect ${attempt.redirectTarget}` : ""}
+              {attempt.finalUrl ? ` · Final ${attempt.finalUrl}` : ""}
+              {attempt.isJson === false ? " · Invalid JSON" : ""}
+              {attempt.missingFields.length > 0
+                ? ` · Missing ${attempt.missingFields.join(", ")}`
+                : ""}
+              {attempt.errorCategory ? ` · ${attempt.errorCategory}` : ""}
+            </Typography>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ import type {
 } from "@yumail/db";
 import type {
   GetMessageInput,
+  JmapConnectionDiagnostics,
   LocalDraft,
   Mailbox,
   Message,
@@ -58,6 +59,8 @@ export interface JmapConnectionTestResult {
   mailboxes: Mailbox[];
   jmapAccountId?: string;
   sessionUrl?: string;
+  apiUrl?: string;
+  diagnostics?: JmapConnectionDiagnostics;
 }
 
 export interface MailAccountState {
@@ -491,13 +494,21 @@ class DefaultMailAccountService implements MailAccountService {
         message: `Connected to ${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}.`,
         mailboxes,
         jmapAccountId: connectionInfo.jmapAccountId,
-        sessionUrl: connectionInfo.sessionUrl
+        sessionUrl: connectionInfo.sessionUrl,
+        apiUrl: connectionInfo.apiUrl,
+        diagnostics: connectionInfo.diagnostics
       };
     } catch (error) {
+      const diagnostics = error instanceof YuMailError
+        && isJmapConnectionDiagnostics(error.cause)
+        ? error.cause
+        : undefined;
+
       return {
         ok: false,
-        message: getErrorMessage(error),
-        mailboxes: []
+        message: diagnostics?.message ?? getErrorMessage(error),
+        mailboxes: [],
+        diagnostics
       };
     }
   }
@@ -538,7 +549,8 @@ class DefaultMailAccountService implements MailAccountService {
       jmapBaseUrl: input.jmapBaseUrl.trim(),
       credentialReference,
       jmapAccountId: connectionInfo.jmapAccountId,
-      sessionApiUrl: connectionInfo.session.apiUrl,
+      sessionUrl: connectionInfo.sessionUrl,
+      sessionApiUrl: connectionInfo.apiUrl,
       lastConnectedAt: now
     };
 
@@ -833,6 +845,13 @@ function normalizeRecipients(recipients: Recipient[]): Recipient[] {
 
 function isValidEmailAddress(value: string): boolean {
   return /^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[^\s@<>(),;:]+$/u.test(value);
+}
+
+function isJmapConnectionDiagnostics(value: unknown): value is JmapConnectionDiagnostics {
+  return typeof value === "object"
+    && value !== null
+    && "attemptedUrls" in value
+    && Array.isArray((value as JmapConnectionDiagnostics).attemptedUrls);
 }
 
 function getErrorMessage(error: unknown): string {

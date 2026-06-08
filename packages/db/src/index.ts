@@ -13,7 +13,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 4;
+export const INITIAL_SCHEMA_VERSION = 5;
 
 export const migrations: Migration[] = [
   {
@@ -32,9 +32,14 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0003_jmap_account_configs.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 4,
     name: "local_drafts",
     path: "packages/db/migrations/0004_local_drafts.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "jmap_session_url",
+    path: "packages/db/migrations/0005_jmap_session_url.sql"
   }
 ];
 
@@ -68,6 +73,7 @@ export interface StoredJmapAccountConfig {
   jmapBaseUrl: string;
   credentialReference: string;
   jmapAccountId?: string;
+  sessionUrl?: string;
   sessionApiUrl?: string;
   lastConnectedAt?: IsoDateTime;
 }

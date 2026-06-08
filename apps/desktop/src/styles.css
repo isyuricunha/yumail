@@ -575,6 +575,27 @@
   padding: var(--ym-space-4);
 }
 
+.diagnostics-panel {
+  display: grid;
+  gap: var(--ym-space-2);
+  border-bottom: 1px solid var(--ym-color-border);
+  padding: var(--ym-space-4);
+}
+
+.diagnostics-list {
+  display: grid;
+  gap: var(--ym-space-2);
+}
+
+.diagnostics-item {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--ym-color-border);
+  border-radius: var(--ym-radius-sm);
+  padding: var(--ym-space-2);
+  overflow-wrap: anywhere;
+}
+
 .status-list {
   display: grid;
   gap: var(--ym-space-2);

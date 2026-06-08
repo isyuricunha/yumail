@@ -21,6 +21,11 @@ function createFetchMock(requestLog = []) {
   return async (_url, init) => {
     if (init?.method === "GET") {
       return jsonResponse({
+        capabilities: {
+          "urn:ietf:params:jmap:core": {},
+          "urn:ietf:params:jmap:mail": {},
+          "urn:ietf:params:jmap:submission": {}
+        },
         accounts: {
           accountA: {
             accountCapabilities: {
@@ -127,6 +132,11 @@ function createComposeFetchMock(requestLog, failSubmission = false) {
   return async (_url, init) => {
     if (init?.method === "GET") {
       return jsonResponse({
+        capabilities: {
+          "urn:ietf:params:jmap:core": {},
+          "urn:ietf:params:jmap:mail": {},
+          "urn:ietf:params:jmap:submission": {}
+        },
         accounts: {
           accountA: {
             accountCapabilities: {

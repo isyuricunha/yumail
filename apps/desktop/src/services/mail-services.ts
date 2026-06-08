@@ -19,15 +19,18 @@ export function createDesktopMailServices() {
   return {
     accountService: createMailAccountService({
       metadataRepository,
-      secretStorage
+      secretStorage,
+      fetch: platformAdapters.http.fetch
     }),
     threadReadingService: createThreadReadingService({
       metadataRepository,
-      secretStorage
+      secretStorage,
+      fetch: platformAdapters.http.fetch
     }),
     composeService: createComposeService({
       metadataRepository,
-      secretStorage
+      secretStorage,
+      fetch: platformAdapters.http.fetch
     })
   };
 }

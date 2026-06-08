@@ -7,7 +7,11 @@ import {
 } from "../dist/index.js";
 
 const sessionResponse = {
-  capabilities: {},
+  capabilities: {
+    "urn:ietf:params:jmap:core": {},
+    "urn:ietf:params:jmap:mail": {},
+    "urn:ietf:params:jmap:submission": {}
+  },
   accounts: {
     accountA: {
       name: "Primary",
@@ -31,6 +35,44 @@ function jsonResponse(body, status = 200) {
     headers: {
       "Content-Type": "application/json"
     }
+  });
+}
+
+function textResponse(body, status = 200, headers = {}) {
+  return new Response(body, {
+    status,
+    headers
+  });
+}
+
+function redirectResponse(location, status = 307) {
+  return new Response("", {
+    status,
+    headers: {
+      Location: location
+    }
+  });
+}
+
+function getHeader(headers, name) {
+  if (!headers) {
+    return undefined;
+  }
+
+  if (headers instanceof Headers) {
+    return headers.get(name) ?? undefined;
+  }
+
+  return headers[name] ?? headers[name.toLowerCase()];
+}
+
+function createDiscoveryProvider(fetchImpl, baseUrl = "https://mail.example.com") {
+  return new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl,
+    authSecret: "password:secret",
+    fetch: fetchImpl
   });
 }
 
@@ -347,8 +389,18 @@ function createSendFetchMock(requestLog, failureType, cleanupFailureType) {
 }
 
 test("creates JMAP session discovery candidates", () => {
+  assert.deepEqual(createJmapSessionUrlCandidates("example.com"), [
+    "https://example.com/.well-known/jmap",
+    "https://example.com/jmap/session"
+  ]);
   assert.deepEqual(createJmapSessionUrlCandidates("https://mail.example.com"), [
     "https://mail.example.com/.well-known/jmap",
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.deepEqual(createJmapSessionUrlCandidates("https://mail.example.com/jmap/session"), [
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.deepEqual(createJmapSessionUrlCandidates("https://mail.example.com/jmap/session/"), [
     "https://mail.example.com/jmap/session"
   ]);
 });
@@ -383,6 +435,194 @@ test("discovers JMAP session, lists mailboxes, and normalizes inbox messages", a
   assert.equal(messages.items[0].from.address, "ada@example.com");
   assert.equal(messages.items[0].isRead, false);
   assert.equal(messages.items[0].isFlagged, true);
+});
+
+test("falls back from a root well-known URL to /jmap/session", async () => {
+  const requests = [];
+  const provider = createDiscoveryProvider(async (url, init) => {
+    requests.push({
+      url,
+      auth: getHeader(init?.headers, "Authorization")
+    });
+
+    return url.endsWith("/.well-known/jmap")
+      ? textResponse("Not found", 404)
+      : jsonResponse(sessionResponse);
+  }, "mail.example.com");
+
+  const connection = await provider.discoverSession();
+
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://mail.example.com/.well-known/jmap",
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.ok(requests.every((request) => request.auth?.startsWith("Basic ")));
+  assert.equal(connection.sessionUrl, "https://mail.example.com/jmap/session");
+});
+
+test("follows a same-origin well-known relative redirect and preserves auth", async () => {
+  const requests = [];
+  const provider = createDiscoveryProvider(async (url, init) => {
+    requests.push({
+      url,
+      auth: getHeader(init?.headers, "Authorization")
+    });
+
+    return url.endsWith("/.well-known/jmap")
+      ? redirectResponse("/jmap/session")
+      : jsonResponse(sessionResponse);
+  }, "https://mail.example.com/.well-known/jmap");
+
+  const connection = await provider.discoverSession();
+
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://mail.example.com/.well-known/jmap",
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.ok(requests[0].auth?.startsWith("Basic "));
+  assert.ok(requests[1].auth?.startsWith("Basic "));
+  assert.equal(connection.diagnostics.attemptedUrls[0].redirectTarget, "https://mail.example.com/jmap/session");
+  assert.equal(connection.sessionUrl, "https://mail.example.com/jmap/session");
+});
+
+test("does not forward auth across cross-origin redirects", async () => {
+  const requests = [];
+  const provider = createDiscoveryProvider(async (url, init) => {
+    requests.push({
+      url,
+      auth: getHeader(init?.headers, "Authorization")
+    });
+
+    return url === "https://mail.example.com/.well-known/jmap"
+      ? redirectResponse("https://accounts.example.net/jmap/session")
+      : jsonResponse(sessionResponse);
+  });
+
+  const connection = await provider.discoverSession();
+
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://mail.example.com/.well-known/jmap",
+    "https://accounts.example.net/jmap/session"
+  ]);
+  assert.ok(requests[0].auth?.startsWith("Basic "));
+  assert.equal(requests[1].auth, undefined);
+  assert.equal(connection.diagnostics.attemptedUrls[1].authSent, false);
+});
+
+test("accepts a direct /jmap/session URL", async () => {
+  const requests = [];
+  const provider = createDiscoveryProvider(async (url, init) => {
+    requests.push({
+      url,
+      auth: getHeader(init?.headers, "Authorization")
+    });
+
+    return jsonResponse(sessionResponse);
+  }, "https://mail.example.com/jmap/session");
+
+  const connection = await provider.discoverSession();
+
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.equal(connection.jmapAccountId, "accountA");
+  assert.equal(connection.apiUrl, "https://mail.example.com/jmap/api");
+  assert.equal(connection.diagnostics.supportsSubmission, true);
+});
+
+test("reports missing mail capability diagnostics", async () => {
+  const provider = createDiscoveryProvider(async () => jsonResponse({
+    ...sessionResponse,
+    accounts: {
+      accountA: {
+        accountCapabilities: {}
+      }
+    }
+  }));
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.equal(error.cause.attemptedUrls[1].errorCategory, "missing-mail-capability");
+      assert.deepEqual(error.cause.attemptedUrls[1].missingFields, [
+        "urn:ietf:params:jmap:mail"
+      ]);
+      return true;
+    }
+  );
+});
+
+test("reports missing top-level mail capability diagnostics", async () => {
+  const provider = createDiscoveryProvider(async () => jsonResponse({
+    ...sessionResponse,
+    capabilities: {
+      "urn:ietf:params:jmap:core": {}
+    }
+  }));
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.equal(error.cause.attemptedUrls[1].errorCategory, "missing-mail-capability");
+      assert.deepEqual(error.cause.attemptedUrls[1].missingFields, [
+        "urn:ietf:params:jmap:mail"
+      ]);
+      return true;
+    }
+  );
+});
+
+test("reports missing apiUrl diagnostics", async () => {
+  const { apiUrl: _apiUrl, ...missingApiUrlSession } = sessionResponse;
+  const provider = createDiscoveryProvider(async () => jsonResponse(missingApiUrlSession));
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.equal(error.cause.attemptedUrls[1].errorCategory, "invalid-session");
+      assert.deepEqual(error.cause.attemptedUrls[1].missingFields, ["apiUrl"]);
+      return true;
+    }
+  );
+});
+
+test("reports invalid JSON diagnostics", async () => {
+  const provider = createDiscoveryProvider(async () => (
+    textResponse("<html>not json</html>", 200, { "Content-Type": "text/html" })
+  ));
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.equal(error.cause.attemptedUrls[1].isJson, false);
+      assert.equal(error.cause.attemptedUrls[1].errorCategory, "invalid-json");
+      return true;
+    }
+  );
+});
+
+test("reports network diagnostics without leaking credentials", async () => {
+  const provider = createDiscoveryProvider(async () => {
+    throw new TypeError("Failed to fetch");
+  }, "https://mail.example.com");
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      const serialized = JSON.stringify(error.cause);
+
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.equal(error.cause.attemptedUrls[1].errorCategory, "network");
+      assert.equal(serialized.includes("secret"), false);
+      assert.equal(serialized.includes("Authorization"), false);
+      assert.equal(error.cause.attemptedUrls[0].authSent, true);
+      return true;
+    }
+  );
 });
 
 test("fetches and normalizes JMAP message detail body parts and attachments", async () => {

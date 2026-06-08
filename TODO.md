@@ -89,6 +89,19 @@
   secret-free send results.
 - [x] Add a Windows/Stalwart live smoke-test checklist before AI integration.
 
+## Milestone 3.6 - JMAP Discovery Diagnostics
+
+- [x] Normalize domain, root URL, well-known URL, and direct session URL inputs.
+- [x] Try `/.well-known/jmap` first and fall back to `/jmap/session` for root inputs.
+- [x] Follow 301, 302, 303, 307, and 308 redirects with relative `Location` support.
+- [x] Preserve Authorization only on same-origin redirects.
+- [x] Validate required JMAP session fields and Mail capability.
+- [x] Store original input, canonical discovered session URL, and JMAP `apiUrl`
+  separately.
+- [x] Add safe structured connection diagnostics with no credential leakage.
+- [x] Route desktop JMAP HTTP through the Tauri platform HTTP adapter.
+- [x] Test Stalwart-style well-known redirect behavior generically.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
@@ -99,7 +112,8 @@
 - [ ] Verify `pnpm dev` opens a Tauri window on a Windows or Linux GUI environment.
 - [ ] Verify packaged Windows persistence and Credential Manager behavior.
 - [ ] Decide whether SQLite database-at-rest encryption is needed.
-- [ ] Verify JMAP account setup against a live Stalwart server.
+- [ ] Verify JMAP account setup against a live Stalwart server after the generic
+  discovery fix.
 - [ ] Verify JMAP body detail fixtures against a live Stalwart server.
 - [ ] Verify JMAP submission against a live Stalwart server.
 - [ ] Verify local draft autosave and native credential retrieval in a packaged desktop app.

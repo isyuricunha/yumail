@@ -1,5 +1,5 @@
 use keyring::{Entry, Error as KeyringError};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, Runtime};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -9,6 +9,34 @@ const DATABASE_URL: &str = "sqlite:yumail.sqlite3";
 #[derive(Deserialize)]
 struct NotificationInput {
     title: String,
+    body: String,
+}
+
+#[derive(Deserialize)]
+struct HttpHeaderInput {
+    name: String,
+    value: String,
+}
+
+#[derive(Deserialize)]
+struct HttpRequestInput {
+    url: String,
+    method: String,
+    headers: Vec<HttpHeaderInput>,
+    body: Option<String>,
+}
+
+#[derive(Serialize)]
+struct HttpHeaderOutput {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct HttpResponseOutput {
+    status: u16,
+    url: String,
+    headers: Vec<HttpHeaderOutput>,
     body: String,
 }
 
@@ -79,6 +107,59 @@ fn opener_open_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn http_fetch(input: HttpRequestInput) -> Result<HttpResponseOutput, String> {
+    let method = input
+        .method
+        .parse::<reqwest::Method>()
+        .map_err(|error| format!("Invalid HTTP method: {error}"))?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not create HTTP client: {error}"))?;
+    let mut request = client.request(method, &input.url);
+
+    for header in input.headers {
+        if header.name.contains(['\r', '\n']) || header.value.contains(['\r', '\n']) {
+            return Err("HTTP headers must not contain newline characters.".to_string());
+        }
+
+        request = request.header(header.name, header.value);
+    }
+
+    if let Some(body) = input.body {
+        request = request.body(body);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("HTTP request failed: {error}"))?;
+    let status = response.status().as_u16();
+    let url = response.url().to_string();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value.to_str().ok().map(|header_value| HttpHeaderOutput {
+                name: name.as_str().to_string(),
+                value: header_value.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Could not read HTTP response body: {error}"))?;
+
+    Ok(HttpResponseOutput {
+        status,
+        url,
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
+
+#[tauri::command]
 fn app_storage_data_dir<R: Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
     app.path()
         .app_data_dir()
@@ -129,6 +210,12 @@ fn database_migrations() -> Vec<Migration> {
             sql: include_str!("../../../../packages/db/migrations/0004_local_drafts.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "jmap_session_url",
+            sql: include_str!("../../../../packages/db/migrations/0005_jmap_session_url.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -144,7 +231,7 @@ mod tests {
             .map(|migration| migration.version)
             .collect::<Vec<_>>();
 
-        assert_eq!(versions, vec![1, 2, 3, 4]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
         assert!(migrations.iter().all(|migration| !migration.sql.is_empty()));
     }
 
@@ -171,6 +258,7 @@ pub fn run() {
             notifications_notify,
             opener_open_external_url,
             opener_open_path,
+            http_fetch,
             app_storage_data_dir,
             app_storage_database_path
         ])

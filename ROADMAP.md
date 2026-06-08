@@ -158,6 +158,28 @@ Acceptance:
 - Cleanup attempts and warnings are visible to the UI and tests.
 - Manual live validation steps are ready for Windows + Stalwart.
 
+## Milestone 3.6 - JMAP Discovery Diagnostics
+
+Status: implemented.
+
+- Domain/base/session URL input normalization for generic JMAP servers.
+- Well-known discovery with pragmatic `/jmap/session` fallback.
+- Manual redirect handling for 301, 302, 303, 307, and 308.
+- Same-origin-only Authorization forwarding across redirects.
+- Session validation for required JMAP fields and Mail capability.
+- Separate storage for original input, canonical discovered session URL, and session
+  `apiUrl`.
+- Desktop JMAP HTTP requests use the Tauri platform HTTP adapter instead of WebView
+  `fetch`.
+- Settings connection tests display safe structured diagnostics without secrets.
+
+Acceptance:
+
+- A plain domain, root URL, direct `/.well-known/jmap`, or direct `/jmap/session` can
+  discover a valid JMAP-compatible server.
+- The Stalwart-style `/.well-known/jmap` to `/jmap/session` redirect works generically.
+- Discovery failures show actionable diagnostics instead of a single generic message.
+
 ## Milestone 4 - AI Provider Layer
 
 - AI settings.

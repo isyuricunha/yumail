@@ -42,6 +42,10 @@ export interface SqlDatabaseAdapter {
   select<T>(query: string, bindValues?: unknown[]): Promise<T[]>;
 }
 
+export interface HttpAdapter {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
 export interface DatabaseAdapter {
   openYuMailDatabase(): Promise<SqlDatabaseAdapter>;
 }
@@ -53,6 +57,87 @@ export interface TauriPlatformAdapters {
   notifications: NotificationAdapter;
   opener: OpenerAdapter;
   appStorage: AppStorageAdapter;
+  http: HttpAdapter;
+}
+
+interface TauriHttpHeader {
+  name: string;
+  value: string;
+}
+
+interface TauriHttpResponse {
+  status: number;
+  url: string;
+  headers: TauriHttpHeader[];
+  body: string;
+}
+
+function normalizeRequestUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") {
+    return input;
+  }
+
+  if (input instanceof URL) {
+    return input.toString();
+  }
+
+  return input.url;
+}
+
+function normalizeRequestHeaders(headers: HeadersInit | undefined): TauriHttpHeader[] {
+  const normalizedHeaders = new Headers(headers);
+
+  return [...normalizedHeaders.entries()].map(([name, value]) => ({
+    name,
+    value
+  }));
+}
+
+async function normalizeRequestBody(body: BodyInit | null | undefined): Promise<string | undefined> {
+  if (body === null || body === undefined) {
+    return undefined;
+  }
+
+  if (typeof body === "string") {
+    return body;
+  }
+
+  if (body instanceof URLSearchParams) {
+    return body.toString();
+  }
+
+  if (body instanceof Blob) {
+    return body.text();
+  }
+
+  if (body instanceof ArrayBuffer) {
+    return new TextDecoder().decode(body);
+  }
+
+  throw new Error("The desktop HTTP adapter currently supports text-compatible request bodies only.");
+}
+
+async function tauriHttpFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await invoke<TauriHttpResponse>("http_fetch", {
+    input: {
+      url: normalizeRequestUrl(input),
+      method: init?.method ?? "GET",
+      headers: normalizeRequestHeaders(init?.headers),
+      body: await normalizeRequestBody(init?.body)
+    }
+  });
+  const headers = new Headers();
+
+  for (const header of response.headers) {
+    headers.append(header.name, header.value);
+  }
+
+  headers.set("x-yumail-final-url", response.url);
+
+  return new Response(response.body, {
+    status: response.status,
+    headers
+  });
 }
 
 export function createTauriPlatformAdapters(): TauriPlatformAdapters {
@@ -89,6 +174,9 @@ export function createTauriPlatformAdapters(): TauriPlatformAdapters {
     appStorage: {
       getAppDataDir: () => invoke<string>("app_storage_data_dir"),
       getDatabasePath: () => invoke<string>("app_storage_database_path")
+    },
+    http: {
+      fetch: tauriHttpFetch
     }
   };
 }

@@ -57,6 +57,7 @@ function createFixture() {
     jmapBaseUrl: "https://mail.example.com",
     credentialReference: "credential:jmap:yu",
     jmapAccountId: "jmap-account-1",
+    sessionUrl: "https://mail.example.com/jmap/session",
     sessionApiUrl: "https://mail.example.com/jmap/api",
     lastConnectedAt: timestamp
   };
@@ -159,8 +160,8 @@ test("registers and applies every SQLite migration", async () => {
   const database = new DatabaseSync(":memory:");
   await applyRegisteredMigrations(database);
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 4);
-  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4]);
+  assert.equal(INITIAL_SCHEMA_VERSION, 5);
+  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4, 5]);
 
   const tables = database.prepare(`
     SELECT name
@@ -230,6 +231,7 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
 
     assert.equal(accountConfig.credentialReference, "credential:jmap:yu");
     assert.equal(accountConfig.jmapBaseUrl, "https://mail.example.com");
+    assert.equal(accountConfig.sessionUrl, "https://mail.example.com/jmap/session");
     assert.equal(mailbox.providerMailboxId, "inbox");
     assert.deepEqual(message.to, [{ name: "Yu", address: "yu@example.com" }]);
     assert.deepEqual(message.cc, [{ name: undefined, address: "team@example.com" }]);

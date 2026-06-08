@@ -284,6 +284,15 @@ const JMAP_SUBMISSION_CAPABILITY = "urn:ietf:params:jmap:submission";
 type FetchFunction = typeof fetch;
 type JmapMethodCall = [string, Record<string, unknown>, string];
 type JmapMethodResponse = [string, unknown, string];
+type DiscoveryErrorCategory =
+  | "network"
+  | "auth"
+  | "server"
+  | "invalid-json"
+  | "invalid-session"
+  | "missing-mail-capability"
+  | "redirect"
+  | "unknown";
 
 interface JmapAccountEntry {
   name?: string;
@@ -293,9 +302,31 @@ interface JmapAccountEntry {
 }
 
 export interface JmapSession {
+  capabilities: Record<string, unknown>;
   apiUrl: string;
   accounts: Record<string, JmapAccountEntry>;
-  primaryAccounts?: Record<string, string>;
+  primaryAccounts: Record<string, string>;
+}
+
+export interface JmapDiscoveryAttempt {
+  url: string;
+  finalUrl?: string;
+  status?: number;
+  redirectTarget?: string;
+  authSent: boolean;
+  isJson?: boolean;
+  missingFields: string[];
+  errorCategory?: DiscoveryErrorCategory;
+  errorMessage?: string;
+}
+
+export interface JmapConnectionDiagnostics {
+  originalInput: string;
+  normalizedInput?: string;
+  attemptedUrls: JmapDiscoveryAttempt[];
+  supportsSubmission: boolean;
+  message: string;
+  developerDetails?: string;
 }
 
 export interface JmapProviderOptions {
@@ -310,7 +341,10 @@ export interface JmapProviderOptions {
 export interface JmapConnectionInfo {
   session: JmapSession;
   jmapAccountId: string;
+  originalInput: string;
   sessionUrl: string;
+  apiUrl: string;
+  diagnostics: JmapConnectionDiagnostics;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -346,6 +380,18 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function isRedirectStatus(status: number): boolean {
+  return [301, 302, 303, 307, 308].includes(status);
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Unknown error.";
+}
+
 export function createJmapAuthorizationHeader(authSecret: string, emailAddress: EmailAddress): string {
   const trimmedSecret = authSecret.trim();
 
@@ -364,22 +410,53 @@ export function createJmapAuthorizationHeader(authSecret: string, emailAddress: 
   return `Bearer ${trimmedSecret}`;
 }
 
-export function createJmapSessionUrlCandidates(baseUrl: string): string[] {
-  const trimmedBaseUrl = baseUrl.trim().replace(/\/+$/u, "");
-  const parsedUrl = new URL(trimmedBaseUrl);
+function normalizeJmapBaseUrlInput(value: string): URL {
+  const trimmedValue = value.trim();
 
-  if (
-    parsedUrl.pathname.endsWith("/.well-known/jmap") ||
-    parsedUrl.pathname.endsWith("/jmap/session")
-  ) {
-    return [parsedUrl.toString()];
+  if (!trimmedValue) {
+    throw new YuMailError({
+      code: "jmap_invalid_base_url",
+      message: "Enter a JMAP domain, base URL, or session URL."
+    });
   }
 
+  const inputWithScheme = /^[a-z][a-z\d+\-.]*:\/\//iu.test(trimmedValue)
+    ? trimmedValue
+    : `https://${trimmedValue}`;
+
+  try {
+    return new URL(inputWithScheme);
+  } catch (error) {
+    throw new YuMailError({
+      code: "jmap_invalid_base_url",
+      message: "The JMAP base URL is not a valid URL.",
+      cause: error
+    });
+  }
+}
+
+export function createJmapSessionUrlCandidates(baseUrl: string): string[] {
+  const parsedUrl = normalizeJmapBaseUrlInput(baseUrl);
+  const normalizedPath = parsedUrl.pathname.replace(/\/+$/u, "") || "/";
+
+  if (
+    normalizedPath.endsWith("/.well-known/jmap") ||
+    normalizedPath.endsWith("/jmap/session")
+  ) {
+    const directSessionUrl = new URL(parsedUrl);
+    directSessionUrl.pathname = normalizedPath;
+
+    return [directSessionUrl.toString()];
+  }
+
+  const rootUrl = new URL(parsedUrl);
+  rootUrl.pathname = "/";
+  rootUrl.search = "";
+  rootUrl.hash = "";
+
   return unique([
-    `${trimmedBaseUrl}/.well-known/jmap`,
-    `${trimmedBaseUrl}/jmap/session`,
-    `${parsedUrl.origin}/.well-known/jmap`,
-    `${parsedUrl.origin}/jmap/session`
+    new URL("/.well-known/jmap", rootUrl).toString(),
+    new URL("/jmap/session", rootUrl).toString()
   ]);
 }
 
@@ -665,6 +742,70 @@ function readSetFailure(
   };
 }
 
+function getDiscoveryErrorCause(error: unknown): {
+  missingFields?: string[];
+  category?: DiscoveryErrorCategory;
+} {
+  if (error instanceof YuMailError && isRecord(error.cause)) {
+    const missingFields = Array.isArray(error.cause.missingFields)
+      ? error.cause.missingFields.filter((field): field is string => typeof field === "string")
+      : undefined;
+    const category = typeof error.cause.category === "string"
+      ? error.cause.category as DiscoveryErrorCategory
+      : undefined;
+
+    return { missingFields, category };
+  }
+
+  return {};
+}
+
+function categorizeDiscoveryError(error: unknown): DiscoveryErrorCategory {
+  const cause = getDiscoveryErrorCause(error);
+
+  if (cause.category) {
+    return cause.category;
+  }
+
+  if (error instanceof SyntaxError) {
+    return "invalid-json";
+  }
+
+  if (error instanceof TypeError) {
+    return "network";
+  }
+
+  return "unknown";
+}
+
+function createDiscoveryFailureMessage(attempts: JmapDiscoveryAttempt[]): string {
+  if (attempts.some((attempt) => attempt.errorCategory === "auth")) {
+    return "JMAP discovery reached the server, but authentication was rejected.";
+  }
+
+  if (attempts.some((attempt) => attempt.errorCategory === "invalid-json")) {
+    return "JMAP discovery reached an endpoint, but it did not return valid JSON.";
+  }
+
+  if (attempts.some((attempt) => attempt.errorCategory === "missing-mail-capability")) {
+    return "JMAP discovery succeeded, but the session does not expose the JMAP Mail capability.";
+  }
+
+  if (attempts.some((attempt) => attempt.errorCategory === "invalid-session")) {
+    return "JMAP discovery reached an endpoint, but the session response is missing required fields.";
+  }
+
+  if (attempts.some((attempt) => attempt.errorCategory === "redirect")) {
+    return "JMAP discovery stopped at an unsupported or unsafe redirect.";
+  }
+
+  if (attempts.some((attempt) => attempt.errorCategory === "server")) {
+    return "JMAP discovery reached the server, but no valid session endpoint responded successfully.";
+  }
+
+  return "Could not discover a valid JMAP session endpoint. Check the domain, network, CORS/platform HTTP, and credentials.";
+}
+
 function parseMethodResponses(responseBody: unknown): JmapMethodResponse[] {
   if (!isRecord(responseBody) || !Array.isArray(responseBody.methodResponses)) {
     throw new YuMailError({
@@ -781,36 +922,111 @@ export class JmapProvider extends PlaceholderMailProvider {
     }
 
     const authorization = createJmapAuthorizationHeader(this.authSecret, this.emailAddress);
-    let lastError: unknown;
+    const attemptedUrls: JmapDiscoveryAttempt[] = [];
+    let normalizedInput: string | undefined;
+
+    try {
+      normalizedInput = normalizeJmapBaseUrlInput(this.baseUrl).toString();
+    } catch (error) {
+      const diagnostics = this.createDiscoveryDiagnostics({
+        attemptedUrls,
+        message: getErrorMessage(error),
+        normalizedInput
+      });
+
+      throw new YuMailError({
+        code: "jmap_session_discovery_failed",
+        message: diagnostics.message,
+        cause: diagnostics
+      });
+    }
 
     for (const sessionUrl of createJmapSessionUrlCandidates(this.baseUrl)) {
       try {
-        const response = await this.fetchImpl(sessionUrl, {
-          method: "GET",
-          headers: {
-            "Accept": "application/json",
-            "Authorization": authorization
-          }
-        });
+        const { response, finalUrl } = await this.fetchJmapSessionWithRedirects(
+          sessionUrl,
+          authorization,
+          attemptedUrls
+        );
+        const contentType = response.headers.get("content-type") ?? "";
+        const currentAttempt = attemptedUrls.at(-1);
+
+        if (currentAttempt) {
+          currentAttempt.finalUrl = finalUrl;
+          currentAttempt.status = response.status;
+        }
 
         if (!response.ok) {
-          lastError = `HTTP ${response.status}`;
+          if (currentAttempt) {
+            currentAttempt.errorCategory ??= response.status === 401 || response.status === 403
+              ? "auth"
+              : "server";
+            currentAttempt.errorMessage ??= `HTTP ${response.status}`;
+          }
           continue;
         }
 
-        const session = this.parseSession(await response.json());
+        let body: unknown;
+
+        try {
+          body = await response.json();
+          if (currentAttempt) {
+            currentAttempt.isJson = true;
+          }
+        } catch {
+          if (currentAttempt) {
+            currentAttempt.isJson = false;
+            currentAttempt.errorCategory = "invalid-json";
+            currentAttempt.errorMessage = contentType
+              ? `Response was not valid JSON (${contentType}).`
+              : "Response was not valid JSON.";
+          }
+          continue;
+        }
+
+        const session = this.parseSession(body);
         const jmapAccountId = this.getPrimaryMailAccountId(session);
-        this.connectionInfo = { session, jmapAccountId, sessionUrl };
+        const accountCapabilities = session.accounts[jmapAccountId]?.accountCapabilities;
+        const diagnostics = this.createDiscoveryDiagnostics({
+          attemptedUrls,
+          normalizedInput,
+          message: "JMAP session discovered.",
+          supportsSubmission: Boolean(
+            session.capabilities[JMAP_SUBMISSION_CAPABILITY]
+            && accountCapabilities?.[JMAP_SUBMISSION_CAPABILITY]
+          )
+        });
+        this.connectionInfo = {
+          session,
+          jmapAccountId,
+          originalInput: this.baseUrl,
+          sessionUrl: finalUrl,
+          apiUrl: session.apiUrl,
+          diagnostics
+        };
         return this.connectionInfo;
       } catch (error) {
-        lastError = error;
+        const currentAttempt = attemptedUrls.at(-1);
+        const cause = getDiscoveryErrorCause(error);
+
+        if (currentAttempt && !currentAttempt.errorMessage) {
+          currentAttempt.errorCategory = cause.category ?? categorizeDiscoveryError(error);
+          currentAttempt.errorMessage = getErrorMessage(error);
+          currentAttempt.missingFields = cause.missingFields ?? currentAttempt.missingFields;
+        }
       }
     }
 
+    const diagnostics = this.createDiscoveryDiagnostics({
+      attemptedUrls,
+      normalizedInput,
+      message: createDiscoveryFailureMessage(attemptedUrls)
+    });
+
     throw new YuMailError({
       code: "jmap_session_discovery_failed",
-      message: "Could not discover a valid JMAP session endpoint.",
-      cause: lastError
+      message: diagnostics.message,
+      cause: diagnostics
     });
   }
 
@@ -1003,7 +1219,10 @@ export class JmapProvider extends PlaceholderMailProvider {
       connectionInfo.jmapAccountId
     ]?.accountCapabilities;
 
-    if (!accountCapabilities?.[JMAP_SUBMISSION_CAPABILITY]) {
+    if (
+      !connectionInfo.session.capabilities[JMAP_SUBMISSION_CAPABILITY]
+      || !accountCapabilities?.[JMAP_SUBMISSION_CAPABILITY]
+    ) {
       throw new YuMailError({
         code: "jmap_submission_not_supported",
         message: "The selected JMAP account does not support email submission."
@@ -1185,25 +1404,161 @@ export class JmapProvider extends PlaceholderMailProvider {
     return this.sendMessage(input);
   }
 
+  private async fetchJmapSessionWithRedirects(
+    initialUrl: string,
+    authorization: string,
+    attemptedUrls: JmapDiscoveryAttempt[]
+  ): Promise<{ response: Response; finalUrl: string }> {
+    let currentUrl = initialUrl;
+    let shouldSendAuth = true;
+    const authorizedOrigin = new URL(initialUrl).origin;
+
+    for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+      const attempt: JmapDiscoveryAttempt = {
+        url: currentUrl,
+        authSent: shouldSendAuth,
+        missingFields: []
+      };
+      attemptedUrls.push(attempt);
+      const headers: Record<string, string> = {
+        "Accept": "application/json"
+      };
+
+      if (shouldSendAuth) {
+        headers.Authorization = authorization;
+      }
+
+      const response = await this.fetchImpl(currentUrl, {
+        method: "GET",
+        redirect: "manual",
+        headers
+      });
+      attempt.status = response.status;
+      attempt.finalUrl = response.headers.get("x-yumail-final-url")
+        || response.url
+        || currentUrl;
+
+      if (!isRedirectStatus(response.status)) {
+        return {
+          response,
+          finalUrl: attempt.finalUrl
+        };
+      }
+
+      const location = response.headers.get("location");
+
+      if (!location) {
+        attempt.errorCategory = "redirect";
+        attempt.errorMessage = `HTTP ${response.status} redirect did not include a Location header.`;
+        return {
+          response,
+          finalUrl: attempt.finalUrl
+        };
+      }
+
+      const redirectUrl = new URL(location, currentUrl).toString();
+      attempt.redirectTarget = redirectUrl;
+
+      currentUrl = redirectUrl;
+      shouldSendAuth = new URL(redirectUrl).origin === authorizedOrigin;
+    }
+
+    const finalAttempt = attemptedUrls.at(-1);
+
+    if (finalAttempt) {
+      finalAttempt.errorCategory = "redirect";
+      finalAttempt.errorMessage = "Too many redirects while discovering the JMAP session.";
+    }
+
+    throw new YuMailError({
+      code: "jmap_too_many_redirects",
+      message: "Too many redirects while discovering the JMAP session.",
+      cause: {
+        category: "redirect"
+      }
+    });
+  }
+
+  private createDiscoveryDiagnostics(input: {
+    attemptedUrls: JmapDiscoveryAttempt[];
+    message: string;
+    normalizedInput?: string;
+    supportsSubmission?: boolean;
+  }): JmapConnectionDiagnostics {
+    return {
+      originalInput: this.baseUrl,
+      normalizedInput: input.normalizedInput,
+      attemptedUrls: input.attemptedUrls,
+      supportsSubmission: input.supportsSubmission ?? false,
+      message: input.message,
+      developerDetails: input.attemptedUrls
+        .map((attempt) => {
+          const details = [
+            `url=${attempt.url}`,
+            `authSent=${attempt.authSent}`,
+            ...(attempt.status === undefined ? [] : [`status=${attempt.status}`]),
+            ...(attempt.redirectTarget ? [`redirect=${attempt.redirectTarget}`] : []),
+            ...(attempt.finalUrl ? [`final=${attempt.finalUrl}`] : []),
+            ...(attempt.isJson === undefined ? [] : [`json=${attempt.isJson}`]),
+            ...(attempt.missingFields.length > 0
+              ? [`missing=${attempt.missingFields.join("|")}`]
+              : []),
+            ...(attempt.errorCategory ? [`category=${attempt.errorCategory}`] : [])
+          ];
+
+          return details.join(" ");
+        })
+        .join("\n")
+    };
+  }
+
   private parseSession(value: unknown): JmapSession {
     if (!isRecord(value)) {
       throw new YuMailError({
         code: "jmap_invalid_session",
-        message: "JMAP session response was not an object."
+        message: "JMAP session response was not an object.",
+        cause: {
+          category: "invalid-session",
+          missingFields: ["session"]
+        }
       });
     }
 
+    const capabilities = getRecord(value, "capabilities");
     const apiUrl = getString(value, "apiUrl");
     const accounts = getRecord(value, "accounts");
+    const primaryAccounts = getRecord(value, "primaryAccounts");
+    const missingFields = [
+      ...(!capabilities ? ["capabilities"] : []),
+      ...(!accounts ? ["accounts"] : []),
+      ...(!primaryAccounts ? ["primaryAccounts"] : []),
+      ...(!apiUrl ? ["apiUrl"] : [])
+    ];
 
-    if (!apiUrl || !accounts) {
+    if (missingFields.length > 0) {
       throw new YuMailError({
         code: "jmap_invalid_session",
-        message: "JMAP session response did not include apiUrl and accounts."
+        message: `JMAP session response is missing: ${missingFields.join(", ")}.`,
+        cause: {
+          category: "invalid-session",
+          missingFields
+        }
+      });
+    }
+
+    if (!capabilities || !accounts || !primaryAccounts || !apiUrl) {
+      throw new YuMailError({
+        code: "jmap_invalid_session",
+        message: "JMAP session response is missing required fields.",
+        cause: {
+          category: "invalid-session",
+          missingFields
+        }
       });
     }
 
     const normalizedAccounts: Record<string, JmapAccountEntry> = {};
+    const normalizedPrimaryAccounts: Record<string, string> = {};
 
     for (const [accountId, account] of Object.entries(accounts)) {
       if (!isRecord(account)) {
@@ -1218,10 +1573,41 @@ export class JmapProvider extends PlaceholderMailProvider {
       };
     }
 
+    for (const [capability, accountId] of Object.entries(primaryAccounts)) {
+      if (typeof accountId === "string") {
+        normalizedPrimaryAccounts[capability] = accountId;
+      }
+    }
+
+    if (!capabilities[JMAP_MAIL_CAPABILITY]) {
+      throw new YuMailError({
+        code: "jmap_mail_capability_missing",
+        message: "JMAP session did not include the JMAP Mail capability.",
+        cause: {
+          category: "missing-mail-capability",
+          missingFields: [JMAP_MAIL_CAPABILITY]
+        }
+      });
+    }
+
+    if (!Object.values(normalizedAccounts).some((account) => (
+      Boolean(account.accountCapabilities?.[JMAP_MAIL_CAPABILITY])
+    ))) {
+      throw new YuMailError({
+        code: "jmap_mail_capability_missing",
+        message: "JMAP session did not include a mail-capable account.",
+        cause: {
+          category: "missing-mail-capability",
+          missingFields: [JMAP_MAIL_CAPABILITY]
+        }
+      });
+    }
+
     return {
+      capabilities,
       apiUrl,
       accounts: normalizedAccounts,
-      primaryAccounts: getRecord(value, "primaryAccounts") as Record<string, string> | undefined
+      primaryAccounts: normalizedPrimaryAccounts
     };
   }
 

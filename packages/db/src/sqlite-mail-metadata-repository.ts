@@ -33,6 +33,7 @@ interface AccountConfigRow {
   jmap_base_url: string;
   credential_reference: string;
   jmap_account_id: string | null;
+  session_url: string | null;
   session_api_url: string | null;
   last_connected_at: string | null;
 }
@@ -153,6 +154,7 @@ const ACCOUNT_CONFIG_SELECT = `
     jmap_account_configs.jmap_base_url,
     jmap_account_configs.credential_reference,
     jmap_account_configs.jmap_account_id,
+    jmap_account_configs.session_url,
     jmap_account_configs.session_api_url,
     jmap_account_configs.last_connected_at
   FROM accounts
@@ -286,13 +288,15 @@ implements MailMetadataRepository, UserPreferenceRepository {
         jmap_base_url,
         credential_reference,
         jmap_account_id,
+        session_url,
         session_api_url,
         last_connected_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         jmap_base_url = excluded.jmap_base_url,
         credential_reference = excluded.credential_reference,
         jmap_account_id = excluded.jmap_account_id,
+        session_url = excluded.session_url,
         session_api_url = excluded.session_api_url,
         last_connected_at = excluded.last_connected_at
     `, [
@@ -300,6 +304,7 @@ implements MailMetadataRepository, UserPreferenceRepository {
       accountConfig.jmapBaseUrl,
       accountConfig.credentialReference,
       accountConfig.jmapAccountId ?? null,
+      accountConfig.sessionUrl ?? null,
       accountConfig.sessionApiUrl ?? null,
       accountConfig.lastConnectedAt ?? null
     ]);
@@ -982,6 +987,7 @@ function mapAccountConfig(row: AccountConfigRow): StoredJmapAccountConfig {
     jmapBaseUrl: row.jmap_base_url,
     credentialReference: row.credential_reference,
     jmapAccountId: row.jmap_account_id ?? undefined,
+    sessionUrl: row.session_url ?? undefined,
     sessionApiUrl: row.session_api_url ?? undefined,
     lastConnectedAt: row.last_connected_at ?? undefined
   };
