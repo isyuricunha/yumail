@@ -10,7 +10,7 @@
     "build:packages": "pnpm -r --filter './packages/**' build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
-    "test": "pnpm build:packages && node --test packages/mail/test/*.test.mjs packages/core/test/*.test.mjs",
+    "test": "pnpm build:packages && node --test packages/mail/test/*.test.mjs packages/core/test/*.test.mjs packages/renderer/test/*.test.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm check:boundaries",
     "check:boundaries": "node scripts/check-boundaries.mjs"
   },

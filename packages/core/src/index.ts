@@ -4,8 +4,14 @@ import type {
   ProviderSyncState,
   StoredJmapAccountConfig
 } from "@yumail/db";
-import type { Mailbox, Message, MailProvider } from "@yumail/mail";
-import { JmapProvider } from "@yumail/mail";
+import type {
+  GetMessageInput,
+  Mailbox,
+  Message,
+  MessageDetail,
+  MailProvider
+} from "@yumail/mail";
+import { JmapProvider, resolveProviderMessageId } from "@yumail/mail";
 import type { EntityId } from "@yumail/shared";
 import { YuMailError, createStableEntityId, toIsoDateTime } from "@yumail/shared";
 
@@ -71,8 +77,99 @@ export interface CreateMailAccountServiceInput {
   fetch?: typeof fetch;
 }
 
+export interface LoadMessageDetailInput extends GetMessageInput {
+  forceRefresh?: boolean;
+}
+
+export interface LoadMessageDetailResult {
+  messageDetail: MessageDetail;
+  source: "cache" | "provider";
+}
+
+export interface ThreadReadingService {
+  loadMessageDetail(input: LoadMessageDetailInput): Promise<LoadMessageDetailResult>;
+}
+
 export function createMailAccountService(input: CreateMailAccountServiceInput): MailAccountService {
   return new DefaultMailAccountService(input);
+}
+
+export function createThreadReadingService(
+  input: CreateMailAccountServiceInput
+): ThreadReadingService {
+  return new DefaultThreadReadingService(input);
+}
+
+class DefaultThreadReadingService implements ThreadReadingService {
+  private readonly metadataRepository: MailMetadataRepository;
+  private readonly secretStorage: SecretStorageAdapter;
+  private readonly fetchImpl?: typeof fetch;
+
+  constructor(input: CreateMailAccountServiceInput) {
+    this.metadataRepository = input.metadataRepository;
+    this.secretStorage = input.secretStorage;
+    this.fetchImpl = input.fetch;
+  }
+
+  async loadMessageDetail(input: LoadMessageDetailInput): Promise<LoadMessageDetailResult> {
+    const providerMessageId = resolveProviderMessageId(input);
+
+    if (!input.forceRefresh) {
+      const cachedMessageDetail = await this.metadataRepository.getMessageDetail(
+        input.accountId,
+        providerMessageId
+      );
+
+      if (cachedMessageDetail) {
+        return {
+          messageDetail: cachedMessageDetail,
+          source: "cache"
+        };
+      }
+    }
+
+    const accountConfigs = await this.metadataRepository.listAccountConfigs();
+    const accountConfig = accountConfigs.find(
+      (candidate) => candidate.account.id === input.accountId
+    );
+
+    if (!accountConfig) {
+      throw new YuMailError({
+        code: "mail_account_not_found",
+        message: "The selected mail account is not configured."
+      });
+    }
+
+    const secret = await this.secretStorage.getSecret(accountConfig.credentialReference);
+
+    if (!secret) {
+      throw new YuMailError({
+        code: "missing_jmap_secret",
+        message: "JMAP credentials are missing from secure storage."
+      });
+    }
+
+    const provider = new JmapProvider({
+      localAccountId: accountConfig.account.id,
+      emailAddress: accountConfig.account.emailAddress,
+      baseUrl: accountConfig.jmapBaseUrl,
+      authSecret: secret,
+      fetch: this.fetchImpl
+    });
+    const messageDetail = await provider.getMessage({
+      accountId: input.accountId,
+      messageId: input.messageId,
+      providerMessageId,
+      mailboxId: input.mailboxId
+    });
+
+    await this.metadataRepository.saveMessageDetail(messageDetail);
+
+    return {
+      messageDetail,
+      source: "provider"
+    };
+  }
 }
 
 class DefaultMailAccountService implements MailAccountService {

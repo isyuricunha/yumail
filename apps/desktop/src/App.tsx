@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   Archive,
   Bot,
   CheckCircle2,
   Clock3,
+  FileText,
+  ImageOff,
   Inbox,
   MailPlus,
+  Paperclip,
   PanelLeft,
   Search,
   Send,
@@ -22,7 +26,8 @@ import type {
   MailAccountState
 } from "@yumail/core";
 import { createFoundationBootstrapState } from "@yumail/core";
-import type { Message } from "@yumail/mail";
+import type { Message, MessageDetail, Recipient } from "@yumail/mail";
+import { createEmailRenderer, type RenderedEmail } from "@yumail/renderer";
 import {
   Button,
   Chip,
@@ -35,9 +40,10 @@ import {
   Typography
 } from "@yumail/ui";
 import { DEVELOPMENT_SECURE_STORAGE_WARNING } from "./services/development-secure-storage";
-import { createDesktopMailAccountService } from "./services/mail-services";
+import { createDesktopMailServices } from "./services/mail-services";
 
 type ActiveView = "inbox" | "thread" | "compose" | "settings";
+type MessageDetailStatus = "idle" | "loading" | "ready" | "error";
 
 interface NavigationItem {
   id: ActiveView;
@@ -61,17 +67,23 @@ export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("inbox");
   const [mailState, setMailState] = useState<MailAccountState>(emptyMailState);
   const [selectedMessageId, setSelectedMessageId] = useState<string>();
+  const [messageDetail, setMessageDetail] = useState<MessageDetail>();
+  const [renderedEmail, setRenderedEmail] = useState<RenderedEmail>();
+  const [messageDetailStatus, setMessageDetailStatus] = useState<MessageDetailStatus>("idle");
+  const [messageDetailError, setMessageDetailError] = useState<string>();
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>();
   const [connectionTest, setConnectionTest] = useState<JmapConnectionTestResult>();
+  const messageDetailRequestId = useRef(0);
   const bootstrapState = useMemo(() => createFoundationBootstrapState(), []);
-  const mailAccountService = useMemo(() => createDesktopMailAccountService(), []);
+  const mailServices = useMemo(() => createDesktopMailServices(), []);
+  const emailRenderer = useMemo(() => createEmailRenderer(window), []);
   const selectedMessage = mailState.inboxMessages.find((message) => message.id === selectedMessageId);
 
   useEffect(() => {
     let isMounted = true;
 
-    void mailAccountService.loadState()
+    void mailServices.accountService.loadState()
       .then((loadedState) => {
         if (!isMounted) {
           return;
@@ -89,7 +101,7 @@ export function App() {
     return () => {
       isMounted = false;
     };
-  }, [mailAccountService]);
+  }, [mailServices]);
 
   async function runMailAction(action: () => Promise<void>) {
     setIsBusy(true);
@@ -106,7 +118,7 @@ export function App() {
 
   async function handleTestConnection(input: JmapAccountSetupInput) {
     await runMailAction(async () => {
-      const result = await mailAccountService.testJmapConnection(input);
+      const result = await mailServices.accountService.testJmapConnection(input);
       setConnectionTest(result);
       setStatusMessage(result.message);
     });
@@ -114,9 +126,10 @@ export function App() {
 
   async function handleSaveAccount(input: JmapAccountSetupInput) {
     await runMailAction(async () => {
-      const savedState = await mailAccountService.saveJmapAccount(input);
+      const savedState = await mailServices.accountService.saveJmapAccount(input);
       setMailState(savedState);
       setSelectedMessageId(savedState.inboxMessages[0]?.id);
+      resetMessageDetail();
       setConnectionTest(undefined);
       setActiveView("inbox");
       setStatusMessage("JMAP account saved and inbox metadata loaded.");
@@ -125,11 +138,64 @@ export function App() {
 
   async function handleRefreshInbox() {
     await runMailAction(async () => {
-      const refreshedState = await mailAccountService.refreshInbox(mailState.accountConfig?.account.id);
+      const refreshedState = await mailServices.accountService.refreshInbox(
+        mailState.accountConfig?.account.id
+      );
       setMailState(refreshedState);
       setSelectedMessageId(refreshedState.inboxMessages[0]?.id);
+      resetMessageDetail();
       setStatusMessage("Inbox metadata refreshed.");
     });
+  }
+
+  function resetMessageDetail() {
+    messageDetailRequestId.current += 1;
+    setMessageDetail(undefined);
+    setRenderedEmail(undefined);
+    setMessageDetailError(undefined);
+    setMessageDetailStatus("idle");
+  }
+
+  async function handleOpenThread(message: Message) {
+    const requestId = messageDetailRequestId.current + 1;
+    messageDetailRequestId.current = requestId;
+    setSelectedMessageId(message.id);
+    setActiveView("thread");
+    setMessageDetail(undefined);
+    setRenderedEmail(undefined);
+    setMessageDetailError(undefined);
+    setMessageDetailStatus("loading");
+
+    try {
+      const result = await mailServices.threadReadingService.loadMessageDetail({
+        accountId: message.accountId,
+        messageId: message.id,
+        providerMessageId: message.providerMessageId,
+        mailboxId: message.mailboxId
+      });
+      const detail = result.messageDetail;
+      const rendered = await emailRenderer.render({
+        mode: detail.bodyHtml ? "safe-html" : "plain-text",
+        bodyText: detail.bodyText,
+        bodyHtml: detail.bodyHtml,
+        allowRemoteImages: false
+      });
+
+      if (messageDetailRequestId.current !== requestId) {
+        return;
+      }
+
+      setMessageDetail(detail);
+      setRenderedEmail(rendered);
+      setMessageDetailStatus("ready");
+    } catch (error) {
+      if (messageDetailRequestId.current !== requestId) {
+        return;
+      }
+
+      setMessageDetailError(getErrorMessage(error));
+      setMessageDetailStatus("error");
+    }
   }
 
   return (
@@ -198,13 +264,17 @@ export function App() {
             isBusy={isBusy}
             mailState={mailState}
             selectedMessageId={selectedMessageId}
-            onOpenThread={(message) => {
-              setSelectedMessageId(message.id);
-              setActiveView("thread");
-            }}
+            onOpenThread={(message) => void handleOpenThread(message)}
             onRefresh={handleRefreshInbox}
           />
-          <ThreadScreen activeView={activeView} selectedMessage={selectedMessage} />
+          <ThreadScreen
+            activeView={activeView}
+            selectedMessage={selectedMessage}
+            messageDetail={messageDetail}
+            renderedEmail={renderedEmail}
+            status={messageDetailStatus}
+            errorMessage={messageDetailError}
+          />
           <aside className="detail-rail">
             {activeView === "compose" ? (
               <ComposeScreen />
@@ -311,21 +381,31 @@ function InboxScreen({
 
 function ThreadScreen({
   activeView,
-  selectedMessage
+  selectedMessage,
+  messageDetail,
+  renderedEmail,
+  status,
+  errorMessage
 }: {
   activeView: ActiveView;
   selectedMessage?: Message;
+  messageDetail?: MessageDetail;
+  renderedEmail?: RenderedEmail;
+  status: MessageDetailStatus;
+  errorMessage?: string;
 }) {
+  const visibleMessage = messageDetail ?? selectedMessage;
+
   return (
     <Surface className="thread-panel">
       <div className="thread-toolbar">
         <div>
           <Typography as="h2" variant="title">
-            {selectedMessage?.subject ?? (activeView === "thread" ? "Thread" : "YuMail JMAP")}
+            {visibleMessage?.subject ?? (activeView === "thread" ? "Thread" : "YuMail JMAP")}
           </Typography>
           <Typography variant="small" muted>
-            {selectedMessage
-              ? `${selectedMessage.from.name ?? selectedMessage.from.address} · ${formatMessageDate(selectedMessage.date)}`
+            {visibleMessage
+              ? `${formatRecipient(visibleMessage.from)} · ${formatMessageDate(visibleMessage.date)}`
               : "Select an inbox message to inspect metadata."}
           </Typography>
         </div>
@@ -339,18 +419,142 @@ function ThreadScreen({
         </div>
       </div>
 
-      <div className="thread-empty">
-        <Shield size={28} aria-hidden="true" />
-        <Typography variant="heading">
-          {selectedMessage ? "Metadata only" : "Privacy-first defaults"}
-        </Typography>
-        <Typography variant="body" muted>
-          {selectedMessage
-            ? selectedMessage.snippet || "Message bodies are not fetched in Milestone 1."
-            : "Remote images stay blocked, AI stays user-triggered, and platform APIs stay behind adapters."}
-        </Typography>
-      </div>
+      {status === "loading" ? <MessageLoadingState /> : null}
+      {status === "error" ? <MessageErrorState message={errorMessage} /> : null}
+      {status === "ready" && messageDetail && renderedEmail ? (
+        <MessageReadingView message={messageDetail} renderedEmail={renderedEmail} />
+      ) : null}
+      {status === "idle" ? (
+        <div className="thread-empty">
+          <Shield size={28} aria-hidden="true" />
+          <Typography variant="heading">Privacy-first reading</Typography>
+          <Typography variant="body" muted>
+            Select an inbox message to load its cached or provider-backed detail. Remote images
+            remain blocked by default.
+          </Typography>
+        </div>
+      ) : null}
     </Surface>
+  );
+}
+
+function MessageLoadingState() {
+  return (
+    <div className="message-loading" aria-label="Loading message detail">
+      <Skeleton height="22px" width="52%" />
+      <Skeleton height="14px" width="72%" />
+      <Skeleton height="14px" width="44%" />
+      <Skeleton className="message-body-skeleton" height="220px" />
+    </div>
+  );
+}
+
+function MessageErrorState({ message }: { message?: string }) {
+  return (
+    <div className="thread-empty" role="alert">
+      <AlertCircle size={28} aria-hidden="true" />
+      <Typography variant="heading">Message could not be loaded</Typography>
+      <Typography variant="body" muted>{message ?? "The provider returned an error."}</Typography>
+    </div>
+  );
+}
+
+function MessageReadingView({
+  message,
+  renderedEmail
+}: {
+  message: MessageDetail;
+  renderedEmail: RenderedEmail;
+}) {
+  return (
+    <article className="message-reading-view">
+      <section className="message-envelope" aria-label="Message envelope">
+        <dl className="message-metadata">
+          <MetadataRow label="From" value={formatRecipient(message.from)} />
+          <MetadataRow label="To" value={formatRecipients(message.to)} />
+          {message.cc.length > 0 ? (
+            <MetadataRow label="Cc" value={formatRecipients(message.cc)} />
+          ) : null}
+          <MetadataRow label="Date" value={formatFullMessageDate(message.date)} />
+        </dl>
+        <div className="message-flags" aria-label="Message flags">
+          <Tag>{message.isRead ? "Read" : "Unread"}</Tag>
+          {message.isFlagged ? <Tag tone="warning">Flagged</Tag> : null}
+          {message.isAnswered ? <Tag tone="success">Replied</Tag> : null}
+        </div>
+      </section>
+
+      {renderedEmail.remoteImagesBlocked ? (
+        <div className="remote-images-notice" role="status">
+          <ImageOff size={17} aria-hidden="true" />
+          <div>
+            <Typography variant="small">Remote images blocked</Typography>
+            <Typography variant="caption" muted>
+              {renderedEmail.remoteImageUrls.length} remote image source
+              {renderedEmail.remoteImageUrls.length === 1 ? "" : "s"} removed
+              {renderedEmail.trackingPixelsDetected > 0
+                ? `, including ${renderedEmail.trackingPixelsDetected} possible tracking pixel${renderedEmail.trackingPixelsDetected === 1 ? "" : "s"}`
+                : ""}.
+            </Typography>
+          </div>
+        </div>
+      ) : null}
+
+      <section className="message-body" aria-label="Message body">
+        {renderedEmail.content ? (
+          renderedEmail.mode === "plain-text" ? (
+            <pre className="plain-text-body">{renderedEmail.content}</pre>
+          ) : (
+            <div
+              className="safe-html-body"
+              dangerouslySetInnerHTML={{ __html: renderedEmail.content }}
+            />
+          )
+        ) : (
+          <div className="message-body-empty">
+            <FileText size={22} aria-hidden="true" />
+            <Typography variant="small" muted>
+              {message.snippet || "This message has no displayable body."}
+            </Typography>
+          </div>
+        )}
+      </section>
+
+      {message.attachments.length > 0 ? (
+        <section className="attachment-section" aria-label="Attachments">
+          <div className="attachment-heading">
+            <Paperclip size={16} aria-hidden="true" />
+            <Typography as="h3" variant="heading">
+              {message.attachments.length} attachment
+              {message.attachments.length === 1 ? "" : "s"}
+            </Typography>
+          </div>
+          <ul className="attachment-list">
+            {message.attachments.map((attachment) => (
+              <li key={attachment.id} className="attachment-item">
+                <FileText size={17} aria-hidden="true" />
+                <div>
+                  <Typography variant="small">{attachment.filename}</Typography>
+                  <Typography variant="caption" muted>
+                    {attachment.mimeType}
+                    {attachment.sizeBytes > 0 ? ` · ${formatFileSize(attachment.sizeBytes)}` : ""}
+                  </Typography>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+function MetadataRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="metadata-row">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
   );
 }
 
@@ -572,6 +776,43 @@ function formatMessageDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
+}
+
+function formatFullMessageDate(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
+}
+
+function formatRecipient(recipient: Recipient): string {
+  return recipient.name
+    ? `${recipient.name} <${recipient.address}>`
+    : recipient.address;
+}
+
+function formatRecipients(recipients: Recipient[]): string {
+  return recipients.length > 0
+    ? recipients.map(formatRecipient).join(", ")
+    : "Not provided";
+}
+
+function formatFileSize(sizeBytes: number): string {
+  if (sizeBytes < 1_024) {
+    return `${sizeBytes} B`;
+  }
+
+  if (sizeBytes < 1_048_576) {
+    return `${(sizeBytes / 1_024).toFixed(1)} KB`;
+  }
+
+  return `${(sizeBytes / 1_048_576).toFixed(1)} MB`;
 }
 
 function getErrorMessage(error: unknown): string {

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMailAccountService } from "../dist/index.js";
+import {
+  createMailAccountService,
+  createThreadReadingService
+} from "../dist/index.js";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -11,7 +14,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-function createFetchMock() {
+function createFetchMock(requestLog = []) {
   return async (_url, init) => {
     if (init?.method === "GET") {
       return jsonResponse({
@@ -31,6 +34,8 @@ function createFetchMock() {
 
     const request = JSON.parse(String(init?.body));
     const methodName = request.methodCalls?.[0]?.[0];
+    const callId = request.methodCalls?.[0]?.[2];
+    requestLog.push({ methodName, callId });
 
     if (methodName === "Mailbox/get") {
       return jsonResponse({
@@ -63,6 +68,7 @@ function createFetchMock() {
     }
 
     if (methodName === "Email/get") {
+      const isMessageDetail = callId === "message-detail";
       return jsonResponse({
         methodResponses: [[
           "Email/get",
@@ -75,11 +81,36 @@ function createFetchMock() {
                 subject: "Persist me",
                 receivedAt: "2026-06-08T10:00:00.000Z",
                 preview: "Metadata only",
-                keywords: {}
+                keywords: {},
+                bodyStructure: isMessageDetail
+                  ? {
+                    partId: "text",
+                    blobId: "text-blob",
+                    type: "text/plain",
+                    size: 15
+                  }
+                  : undefined,
+                bodyValues: isMessageDetail
+                  ? {
+                    text: {
+                      value: "Provider body"
+                    }
+                  }
+                  : undefined,
+                textBody: isMessageDetail
+                  ? [{
+                    partId: "text",
+                    blobId: "text-blob",
+                    type: "text/plain",
+                    size: 15
+                  }]
+                  : undefined,
+                htmlBody: isMessageDetail ? [] : undefined,
+                attachments: isMessageDetail ? [] : undefined
               }
             ]
           },
-          "emails"
+          callId
         ]]
       });
     }
@@ -93,6 +124,7 @@ class MemoryRepository {
     accountConfigs: [],
     mailboxesByAccountId: {},
     messagesByMailboxId: {},
+    messageDetailsByCacheKey: {},
     syncStates: []
   };
 
@@ -125,6 +157,16 @@ class MemoryRepository {
 
   async getMessages(mailboxId) {
     return this.snapshot.messagesByMailboxId[mailboxId] ?? [];
+  }
+
+  async saveMessageDetail(messageDetail) {
+    const key = `${encodeURIComponent(messageDetail.accountId)}:${encodeURIComponent(messageDetail.providerMessageId)}`;
+    this.snapshot.messageDetailsByCacheKey[key] = messageDetail;
+  }
+
+  async getMessageDetail(accountId, providerMessageId) {
+    const key = `${encodeURIComponent(accountId)}:${encodeURIComponent(providerMessageId)}`;
+    return this.snapshot.messageDetailsByCacheKey[key];
   }
 
   async saveSyncState(syncState) {
@@ -173,4 +215,43 @@ test("saves JMAP account metadata and keeps the secret out of metadata storage",
   assert.equal(state.inboxMessages[0].subject, "Persist me");
   assert.equal(serializedMetadata.includes("super-secret"), false);
   assert.equal(Object.values(secretStorage.secrets).includes("Bearer super-secret"), true);
+});
+
+test("loads message detail from the provider once and then uses the local cache", async () => {
+  const repository = new MemoryRepository();
+  const secretStorage = new MemorySecretStorage();
+  const requestLog = [];
+  const accountService = createMailAccountService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createFetchMock(requestLog)
+  });
+
+  const accountState = await accountService.saveJmapAccount({
+    displayName: "Yu",
+    emailAddress: "yu@example.com",
+    jmapBaseUrl: "https://mail.example.com",
+    authSecret: "Bearer super-secret"
+  });
+  const message = accountState.inboxMessages[0];
+  const readingService = createThreadReadingService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createFetchMock(requestLog)
+  });
+  const input = {
+    accountId: message.accountId,
+    messageId: message.id,
+    mailboxId: message.mailboxId
+  };
+
+  const fetched = await readingService.loadMessageDetail(input);
+  const cached = await readingService.loadMessageDetail(input);
+  const detailRequests = requestLog.filter((request) => request.callId === "message-detail");
+
+  assert.equal(fetched.source, "provider");
+  assert.equal(fetched.messageDetail.bodyText, "Provider body");
+  assert.equal(cached.source, "cache");
+  assert.equal(cached.messageDetail.bodyText, "Provider body");
+  assert.equal(detailRequests.length, 1);
 });

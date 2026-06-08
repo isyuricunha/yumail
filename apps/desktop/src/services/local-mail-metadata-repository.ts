@@ -4,8 +4,11 @@ import type {
   ProviderSyncState,
   StoredJmapAccountConfig
 } from "@yumail/db";
-import { createEmptyMailMetadataSnapshot } from "@yumail/db";
-import type { Mailbox, Message } from "@yumail/mail";
+import {
+  createEmptyMailMetadataSnapshot,
+  createMessageDetailCacheKey
+} from "@yumail/db";
+import type { Mailbox, Message, MessageDetail } from "@yumail/mail";
 import type { EntityId } from "@yumail/shared";
 
 const MAIL_METADATA_KEY = "yumail.mail-metadata.v1";
@@ -24,6 +27,7 @@ function readSnapshot(): MailMetadataSnapshot {
       accountConfigs: Array.isArray(parsedValue.accountConfigs) ? parsedValue.accountConfigs : [],
       mailboxesByAccountId: parsedValue.mailboxesByAccountId ?? {},
       messagesByMailboxId: parsedValue.messagesByMailboxId ?? {},
+      messageDetailsByCacheKey: parsedValue.messageDetailsByCacheKey ?? {},
       syncStates: Array.isArray(parsedValue.syncStates) ? parsedValue.syncStates : []
     };
   } catch {
@@ -86,6 +90,30 @@ export class LocalMailMetadataRepository implements MailMetadataRepository {
 
   async getMessages(mailboxId: EntityId): Promise<Message[]> {
     return readSnapshot().messagesByMailboxId[mailboxId] ?? [];
+  }
+
+  async saveMessageDetail(messageDetail: MessageDetail): Promise<void> {
+    const snapshot = readSnapshot();
+    const cacheKey = createMessageDetailCacheKey(
+      messageDetail.accountId,
+      messageDetail.providerMessageId
+    );
+
+    writeSnapshot({
+      ...snapshot,
+      messageDetailsByCacheKey: {
+        ...snapshot.messageDetailsByCacheKey,
+        [cacheKey]: messageDetail
+      }
+    });
+  }
+
+  async getMessageDetail(
+    accountId: EntityId,
+    providerMessageId: string
+  ): Promise<MessageDetail | undefined> {
+    const cacheKey = createMessageDetailCacheKey(accountId, providerMessageId);
+    return readSnapshot().messageDetailsByCacheKey[cacheKey];
   }
 
   async saveSyncState(syncState: ProviderSyncState): Promise<void> {

@@ -45,6 +45,13 @@ Milestone 1 adds `MailAccountService`, which coordinates:
 - local metadata repository writes.
 - secret-storage references.
 
+Milestone 2 adds `ThreadReadingService`, which coordinates:
+
+- cache-first message detail loading.
+- account and secret lookup through existing adapters.
+- provider detail fetches through `MailProvider`.
+- local message detail cache updates.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -52,10 +59,13 @@ Owns normalized mail provider contracts.
 Current provider surfaces:
 
 - `MailProvider`
-- `JmapProvider` for read-only JMAP session discovery, mailbox listing, and message metadata listing.
+- `JmapProvider` for read-only JMAP session discovery, mailbox listing, message metadata
+  listing, and full message detail reads.
 - `ImapSmtpProvider` placeholder for future generic IMAP/SMTP.
 
 The UI must consume normalized YuMail models, not protocol-specific JMAP or IMAP data.
+JMAP `Email/get` body structures and values are normalized into `MessageDetail`,
+`MessageBodyPart`, and `Attachment` models before they leave this package.
 
 ### `packages/ai`
 
@@ -73,7 +83,12 @@ Current action contracts:
 
 ### `packages/db`
 
-Owns SQLite schema and future repositories. The initial migration stores provider metadata, message cache data, AI artifacts, sync state, and preferences.
+Owns SQLite schema and repository contracts. The schema stores provider metadata,
+message cache data, AI artifacts, sync state, and preferences.
+
+Milestone 2 adds a one-to-one `message_bodies` cache keyed by `message_id` with a unique
+`account_id` and `provider_message_id` pair. Plain and raw HTML bodies are stored once.
+Body-part structure is stored as metadata JSON without duplicating body payloads.
 
 Secrets are not stored directly. Tables use references such as `provider_config_reference` and `api_key_reference`.
 
@@ -87,8 +102,15 @@ Owns email rendering safety contracts:
 - plain text mode
 - remote image blocking
 - tracking pixel detection
+- external link hardening
 
-No raw email HTML should be rendered directly in the main app DOM.
+Milestone 2 uses DOMPurify before HTML reaches React. Active and embedded content,
+event handlers, inline styles, remote CSS vectors, and unsafe URL protocols are removed.
+A second detached-DOM pass removes non-embedded image sources by default and hardens
+HTTP(S) and mail links with a new browsing context, `noopener`, `noreferrer`, and no
+referrer.
+
+Raw cached email HTML must never be rendered directly in the app DOM.
 
 ### `packages/search`
 
@@ -131,6 +153,7 @@ The boundary script fails if:
 apps/desktop
   -> packages/ui
   -> packages/core
+  -> packages/renderer
 
 packages/core
   -> packages/mail
@@ -138,8 +161,11 @@ packages/core
   -> packages/db
   -> packages/shared
 
-packages/mail, packages/ai, packages/db, packages/renderer, packages/search
+packages/mail, packages/ai, packages/db, packages/search
   -> packages/shared
+
+packages/renderer
+  -> DOMPurify
 
 packages/platform-tauri
   -> @tauri-apps/api

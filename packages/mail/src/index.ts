@@ -57,6 +57,21 @@ export interface Attachment {
   contentId?: string;
 }
 
+export interface MessageBodyPart {
+  partId?: string;
+  blobId?: string;
+  mimeType: string;
+  name?: string;
+  charset?: string;
+  sizeBytes?: number;
+  disposition?: string;
+  contentId?: string;
+  language: string[];
+  location?: string;
+  isTruncated: boolean;
+  hasEncodingProblem: boolean;
+}
+
 export interface Message extends TimestampedEntity {
   id: EntityId;
   accountId: EntityId;
@@ -84,6 +99,7 @@ export interface Message extends TimestampedEntity {
 export interface MessageDetail extends Message {
   bodyText?: string;
   bodyHtml?: string;
+  bodyParts: MessageBodyPart[];
   attachments: Attachment[];
 }
 
@@ -123,6 +139,8 @@ export type ListMessagesResult = PagedResult<Message>;
 export interface GetMessageInput {
   accountId: EntityId;
   messageId: EntityId;
+  providerMessageId?: string;
+  mailboxId?: EntityId;
 }
 
 export interface GetThreadInput {
@@ -334,6 +352,21 @@ function createMessageEntityId(accountId: EntityId, providerMessageId: string): 
   return `${accountId}:message:${encodeURIComponent(providerMessageId)}`;
 }
 
+export function resolveProviderMessageId(input: GetMessageInput): string {
+  if (input.providerMessageId) {
+    return input.providerMessageId;
+  }
+
+  const marker = ":message:";
+  const markerIndex = input.messageId.indexOf(marker);
+
+  if (markerIndex === -1) {
+    return input.messageId;
+  }
+
+  return decodeURIComponent(input.messageId.slice(markerIndex + marker.length));
+}
+
 function normalizeMailboxRole(role: string | undefined, name: string): MailboxRole {
   const normalizedRole = role?.toLowerCase();
   const normalizedName = name.toLowerCase();
@@ -394,6 +427,96 @@ function firstStringValue(value: unknown): string | undefined {
 function getFirstMailboxId(email: Record<string, unknown>): string | undefined {
   const mailboxIds = getRecord(email, "mailboxIds");
   return mailboxIds ? Object.keys(mailboxIds)[0] : undefined;
+}
+
+function getStringArray(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function flattenBodyStructure(
+  part: Record<string, unknown> | undefined,
+  output: Record<string, unknown>[] = []
+): Record<string, unknown>[] {
+  if (!part) {
+    return output;
+  }
+
+  output.push(part);
+
+  for (const subPart of getRecordArray(part, "subParts")) {
+    flattenBodyStructure(subPart, output);
+  }
+
+  return output;
+}
+
+function getBodyValue(
+  bodyValues: Record<string, unknown>,
+  partId: string | undefined
+): Record<string, unknown> | undefined {
+  if (!partId) {
+    return undefined;
+  }
+
+  const value = bodyValues[partId];
+  return isRecord(value) ? value : undefined;
+}
+
+function readBodyPart(
+  part: Record<string, unknown>,
+  bodyValues: Record<string, unknown>
+): MessageBodyPart {
+  const partId = getString(part, "partId");
+  const bodyValue = getBodyValue(bodyValues, partId);
+
+  return {
+    partId,
+    blobId: getString(part, "blobId"),
+    mimeType: getString(part, "type") ?? "application/octet-stream",
+    name: getString(part, "name"),
+    charset: getString(part, "charset"),
+    sizeBytes: getNumber(part, "size"),
+    disposition: getString(part, "disposition"),
+    contentId: getString(part, "cid"),
+    language: getStringArray(part, "language"),
+    location: getString(part, "location"),
+    isTruncated: bodyValue ? getBoolean(bodyValue, "isTruncated") ?? false : false,
+    hasEncodingProblem: bodyValue ? getBoolean(bodyValue, "isEncodingProblem") ?? false : false
+  };
+}
+
+function collectBodyValue(
+  parts: Record<string, unknown>[],
+  bodyValues: Record<string, unknown>
+): string | undefined {
+  const values = parts
+    .map((part) => getBodyValue(bodyValues, getString(part, "partId")))
+    .map((bodyValue) => bodyValue ? getString(bodyValue, "value") : undefined)
+    .filter((value): value is string => Boolean(value));
+
+  return values.length > 0 ? values.join("\n") : undefined;
+}
+
+function uniqueBodyParts(parts: Record<string, unknown>[]): Record<string, unknown>[] {
+  const uniqueParts = new Map<string, Record<string, unknown>>();
+
+  for (const part of parts) {
+    const key = [
+      getString(part, "partId"),
+      getString(part, "blobId"),
+      getString(part, "type"),
+      getString(part, "name")
+    ].filter(Boolean).join(":");
+
+    if (key) {
+      uniqueParts.set(key, part);
+    }
+  }
+
+  return [...uniqueParts.values()];
 }
 
 function getMethodResponse(
@@ -673,6 +796,70 @@ export class JmapProvider extends PlaceholderMailProvider {
     };
   }
 
+  override async getMessage(input: GetMessageInput): Promise<MessageDetail> {
+    const connectionInfo = await this.discoverSession();
+    const providerMessageId = resolveProviderMessageId(input);
+    const methodResponses = await this.callJmap([
+      [
+        "Email/get",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          ids: [providerMessageId],
+          properties: [
+            "id",
+            "blobId",
+            "mailboxIds",
+            "threadId",
+            "messageId",
+            "from",
+            "to",
+            "cc",
+            "bcc",
+            "replyTo",
+            "subject",
+            "receivedAt",
+            "sentAt",
+            "preview",
+            "keywords",
+            "hasAttachment",
+            "bodyStructure",
+            "bodyValues",
+            "textBody",
+            "htmlBody",
+            "attachments"
+          ],
+          bodyProperties: [
+            "partId",
+            "blobId",
+            "size",
+            "name",
+            "type",
+            "charset",
+            "disposition",
+            "cid",
+            "language",
+            "location"
+          ],
+          fetchTextBodyValues: true,
+          fetchHTMLBodyValues: true,
+          maxBodyValueBytes: 2_000_000
+        },
+        "message-detail"
+      ]
+    ]);
+    const response = getMethodResponse(methodResponses, "Email/get", "message-detail");
+    const email = Array.isArray(response.list) ? response.list.find(isRecord) : undefined;
+
+    if (!email) {
+      throw new YuMailError({
+        code: "jmap_message_not_found",
+        message: "The requested JMAP message was not found."
+      });
+    }
+
+    return this.normalizeMessageDetail(email, input.mailboxId);
+  }
+
   private parseSession(value: unknown): JmapSession {
     if (!isRecord(value)) {
       throw new YuMailError({
@@ -793,9 +980,53 @@ export class JmapProvider extends PlaceholderMailProvider {
       isAnswered: keywords.$answered === true,
       hasAttachments: getBoolean(email, "hasAttachment") ?? false,
       systemTags: [],
-      userTags: [],
+      userTags: Object.entries(keywords)
+        .filter(([keyword, isSet]) => !keyword.startsWith("$") && isSet === true)
+        .map(([keyword]) => keyword),
       createdAt: now,
       updatedAt: now
+    };
+  }
+
+  private normalizeMessageDetail(
+    email: Record<string, unknown>,
+    requestedMailboxId?: EntityId
+  ): MessageDetail {
+    const providerMailboxId = getFirstMailboxId(email);
+    const fallbackMailboxId = requestedMailboxId ?? createMailboxEntityId(
+      this.localAccountId,
+      providerMailboxId ?? "unknown"
+    );
+    const message = this.normalizeMessage(email, fallbackMailboxId);
+    const bodyValues = getRecord(email, "bodyValues") ?? {};
+    const textBody = getRecordArray(email, "textBody");
+    const htmlBody = getRecordArray(email, "htmlBody");
+    const attachmentParts = getRecordArray(email, "attachments");
+    const structureParts = flattenBodyStructure(getRecord(email, "bodyStructure"));
+    const bodyParts = uniqueBodyParts([
+      ...structureParts,
+      ...textBody,
+      ...htmlBody,
+      ...attachmentParts
+    ]).map((part) => readBodyPart(part, bodyValues));
+
+    return {
+      ...message,
+      bodyText: collectBodyValue(textBody, bodyValues),
+      bodyHtml: collectBodyValue(htmlBody, bodyValues),
+      bodyParts,
+      attachments: attachmentParts.map((part, index) => ({
+        id: `${message.id}:attachment:${encodeURIComponent(
+          getString(part, "blobId") ?? getString(part, "partId") ?? String(index)
+        )}`,
+        messageId: message.id,
+        providerAttachmentId:
+          getString(part, "blobId") ?? getString(part, "partId") ?? String(index),
+        filename: getString(part, "name") ?? `attachment-${index + 1}`,
+        mimeType: getString(part, "type") ?? "application/octet-stream",
+        sizeBytes: getNumber(part, "size") ?? 0,
+        contentId: getString(part, "cid")
+      }))
     };
   }
 }

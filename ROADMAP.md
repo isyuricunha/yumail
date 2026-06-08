@@ -46,15 +46,27 @@ Remaining hardening:
 
 ## Milestone 2 - Read And Render
 
-- Fetch message and thread details.
-- Plain text rendering.
-- Safe HTML rendering.
-- Remote image blocking.
-- Attachment metadata display.
+Status: implemented for single-message Inbox reading.
+
+- Fetch message detail through `MailProvider` and `ThreadReadingService`.
+- Cache normalized message detail by account and provider message ID.
+- Normalize JMAP body values, body structure, flags, recipients, and attachments.
+- Render plain text without HTML interpretation.
+- Sanitize HTML with DOMPurify before display.
+- Block and report remote images by default.
+- Harden external links.
+- Display attachment metadata without download or open actions.
 
 Acceptance:
 
 - A user can safely read cached or fetched email.
+
+Remaining hardening:
+
+- verify message detail reads against a live Stalwart server.
+- replace localStorage-backed repositories with the SQLite schema implementation.
+- add a real platform external-link opener before enabling richer link actions.
+- add provider-backed multi-message thread assembly when needed by reply workflows.
 
 ## Milestone 3 - Compose And Send
 

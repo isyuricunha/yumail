@@ -12,6 +12,11 @@
   },
   "dependencies": {
     "@yumail/core": "workspace:*",
+    "@yumail/db": "workspace:*",
+    "@yumail/mail": "workspace:*",
+    "@yumail/platform-tauri": "workspace:*",
+    "@yumail/renderer": "workspace:*",
+    "@yumail/shared": "workspace:*",
     "@yumail/ui": "workspace:*",
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",

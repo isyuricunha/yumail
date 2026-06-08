@@ -16,6 +16,10 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@yumail/shared": "workspace:*"
+    "@yumail/shared": "workspace:*",
+    "dompurify": "^3.4.8"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
   }
 }
