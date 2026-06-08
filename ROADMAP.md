@@ -70,7 +70,7 @@ Remaining hardening:
 Status: implemented.
 
 - Official Tauri SQL plugin with SQLite support.
-- Rust-registered migrations 0001-0003.
+- Rust-registered migrations 0001-0006.
 - SQL-backed account, mailbox, message, detail, attachment, sync, and preference repositories.
 - JMAP configuration and credential-reference table.
 - Native OS credential manager integration through the secure-storage adapter.
@@ -179,6 +179,24 @@ Acceptance:
   discover a valid JMAP-compatible server.
 - The Stalwart-style `/.well-known/jmap` to `/jmap/session` redirect works generically.
 - Discovery failures show actionable diagnostics instead of a single generic message.
+
+## Milestone 3.7 - JMAP Auth Modes
+
+Status: implemented.
+
+- Password / Basic Auth is the default account setup mode.
+- Bearer token mode remains available for token-based JMAP servers.
+- Basic Auth uses the account email address as username and sends
+  `Authorization: Basic <base64(email:password)>`.
+- JMAP account metadata persists auth mode and optional non-secret username metadata in
+  SQLite; password/token values remain only in secure storage.
+- Connection diagnostics show auth mode and Basic username without showing secrets.
+
+Acceptance:
+
+- Stalwart-style password authentication can use a plain password/app-password without
+  `password:` or `user:` prefixes.
+- Bearer-token servers can still be configured explicitly.
 
 ## Milestone 4 - AI Provider Layer
 

@@ -90,10 +90,15 @@ base URL, well-known URL, or direct session URL. It normalizes missing schemes t
 same-origin redirects. A discovered account stores both the canonical session URL and
 the JMAP `apiUrl` from the session object.
 
+JMAP authentication is explicit account metadata. `basic` sends HTTP Basic with the
+account email address as username unless an explicit non-secret username is later
+provided. `bearer` sends a Bearer token. Passwords and tokens are resolved from secure
+storage by core services and are never persisted in SQLite.
+
 Discovery diagnostics are part of the provider result and error cause. They include
 attempted URLs, HTTP status, redirect target, final URL, JSON validation state, missing
-session fields, auth-sent state, and safe error category. They never include password,
-token, or Authorization header values.
+session fields, auth-sent state, auth mode, Basic username, and safe error category.
+They never include password, token, or Authorization header values.
 
 JMAP submission remains fully inside `JmapProvider`:
 
@@ -158,8 +163,9 @@ Body-part structure is stored as metadata JSON without duplicating body payloads
 
 Milestone 2.5 adds `jmap_account_configs` for JMAP URLs, discovered provider IDs, and
 credential references. Migration 0005 adds the canonical discovered session URL
-separately from the JMAP session `apiUrl`. Secret values are never stored in this table
-or any other SQLite table.
+separately from the JMAP session `apiUrl`. Migration 0006 adds auth mode and optional
+non-secret auth username metadata. Secret values are never stored in this table or any
+other SQLite table.
 
 Milestone 3 adds `local_drafts`. Local drafts contain account and reply references,
 recipient JSON, subject, plain-text body, and timestamps. They are local-only and are
@@ -232,7 +238,7 @@ depend on WebView/browser CORS policy. Redirect policy and auth forwarding remai
 
 ### Desktop Database Initialization
 
-Rust registers migrations 0001 through 0005 with the SQL plugin for
+Rust registers migrations 0001 through 0006 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 

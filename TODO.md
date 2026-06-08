@@ -41,7 +41,7 @@
 ## Milestone 2.5 - Desktop Storage And Credential Hardening
 
 - [x] Add the official Tauri SQL plugin with SQLite support.
-- [x] Register and apply migrations 0001-0003 through the desktop runtime.
+- [x] Register and apply migrations 0001-0006 through the desktop runtime.
 - [x] Add focused account, mailbox, message, detail, sync, and preference repositories.
 - [x] Persist JMAP configuration and credential references without secret values.
 - [x] Replace runtime metadata localStorage with SQLite.
@@ -102,6 +102,18 @@
 - [x] Route desktop JMAP HTTP through the Tauri platform HTTP adapter.
 - [x] Test Stalwart-style well-known redirect behavior generically.
 
+## Milestone 3.7 - JMAP Auth Modes
+
+- [x] Add explicit `basic` and `bearer` JMAP auth modes.
+- [x] Default account setup to Password / Basic Auth.
+- [x] Generate Basic Auth as `base64(email:password)`.
+- [x] Keep Bearer token mode available as a non-default option.
+- [x] Persist auth mode and optional non-secret username metadata in SQLite.
+- [x] Keep password/token values only in secure storage.
+- [x] Show auth mode and Basic username in diagnostics without leaking secrets.
+- [x] Test Basic/Bearer headers, redirect auth handling, Stalwart-like Basic success,
+  401 diagnostics, and secret-free diagnostics.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
@@ -123,3 +135,5 @@
 - [ ] Add outgoing attachment upload/send support.
 - [ ] Add rich-text/HTML composition.
 - [ ] Decide whether provider-side draft synchronization is needed.
+- [ ] Add an optional JMAP Basic Auth username override if a server requires a username
+  different from the email address.

@@ -66,12 +66,14 @@ function getHeader(headers, name) {
   return headers[name] ?? headers[name.toLowerCase()];
 }
 
-function createDiscoveryProvider(fetchImpl, baseUrl = "https://mail.example.com") {
+function createDiscoveryProvider(fetchImpl, baseUrl = "https://mail.example.com", options = {}) {
   return new JmapProvider({
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl,
-    authSecret: "password:secret",
+    authSecret: options.authSecret ?? "secret",
+    authMode: options.authMode ?? "basic",
+    authUsername: options.authUsername,
     fetch: fetchImpl
   });
 }
@@ -405,10 +407,26 @@ test("creates JMAP session discovery candidates", () => {
   ]);
 });
 
-test("creates authorization headers for supported credential inputs", () => {
-  assert.equal(createJmapAuthorizationHeader("Bearer abc", "yu@example.com"), "Bearer abc");
-  assert.equal(createJmapAuthorizationHeader("user:secret", "yu@example.com"), `Basic ${btoa("user:secret")}`);
-  assert.equal(createJmapAuthorizationHeader("password:secret", "yu@example.com"), `Basic ${btoa("yu@example.com:secret")}`);
+test("creates Basic and Bearer authorization headers", () => {
+  assert.equal(
+    createJmapAuthorizationHeader("secret", "yu@example.com", { mode: "basic" }),
+    `Basic ${btoa("yu@example.com:secret")}`
+  );
+  assert.equal(
+    createJmapAuthorizationHeader("secret", "yu@example.com", {
+      mode: "basic",
+      username: "login@example.com"
+    }),
+    `Basic ${btoa("login@example.com:secret")}`
+  );
+  assert.equal(
+    createJmapAuthorizationHeader("abc", "yu@example.com", { mode: "bearer" }),
+    "Bearer abc"
+  );
+  assert.equal(
+    createJmapAuthorizationHeader("Bearer abc", "yu@example.com", { mode: "bearer" }),
+    "Bearer abc"
+  );
 });
 
 test("discovers JMAP session, lists mailboxes, and normalizes inbox messages", async () => {
@@ -416,7 +434,8 @@ test("discovers JMAP session, lists mailboxes, and normalizes inbox messages", a
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: createFetchMock()
   });
 
@@ -485,6 +504,34 @@ test("follows a same-origin well-known relative redirect and preserves auth", as
   assert.equal(connection.sessionUrl, "https://mail.example.com/jmap/session");
 });
 
+test("discovers a Stalwart-like session with Basic Auth email and password", async () => {
+  const requests = [];
+  const provider = createDiscoveryProvider(async (url, init) => {
+    requests.push({
+      url,
+      auth: getHeader(init?.headers, "Authorization")
+    });
+
+    return url.endsWith("/.well-known/jmap")
+      ? redirectResponse("/jmap/session")
+      : jsonResponse(sessionResponse);
+  }, "https://mail.example.com", {
+    authSecret: "correct-password"
+  });
+  const expectedAuthorization = `Basic ${btoa("yu@example.com:correct-password")}`;
+  const connection = await provider.discoverSession();
+
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://mail.example.com/.well-known/jmap",
+    "https://mail.example.com/jmap/session"
+  ]);
+  assert.equal(requests[0].auth, expectedAuthorization);
+  assert.equal(requests[1].auth, expectedAuthorization);
+  assert.equal(connection.diagnostics.authMode, "basic");
+  assert.equal(connection.diagnostics.authUsername, "yu@example.com");
+  assert.equal(connection.sessionUrl, "https://mail.example.com/jmap/session");
+});
+
 test("does not forward auth across cross-origin redirects", async () => {
   const requests = [];
   const provider = createDiscoveryProvider(async (url, init) => {
@@ -507,6 +554,7 @@ test("does not forward auth across cross-origin redirects", async () => {
   assert.ok(requests[0].auth?.startsWith("Basic "));
   assert.equal(requests[1].auth, undefined);
   assert.equal(connection.diagnostics.attemptedUrls[1].authSent, false);
+  assert.equal(connection.diagnostics.attemptedUrls[1].authMode, "basic");
 });
 
 test("accepts a direct /jmap/session URL", async () => {
@@ -625,12 +673,61 @@ test("reports network diagnostics without leaking credentials", async () => {
   );
 });
 
+test("reports useful Basic Auth diagnostics for a wrong password without leaking it", async () => {
+  const provider = createDiscoveryProvider(async (url) => (
+    url.endsWith("/.well-known/jmap")
+      ? redirectResponse("/jmap/session")
+      : textResponse("Unauthorized", 401, { "Content-Type": "text/plain" })
+  ), "https://mail.example.com", {
+    authSecret: "wrong-password"
+  });
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      const serialized = JSON.stringify(error.cause);
+      const finalAttempt = error.cause.attemptedUrls.at(-1);
+
+      assert.equal(error.code, "jmap_session_discovery_failed");
+      assert.match(error.message, /Basic Auth user yu@example\.com/u);
+      assert.equal(finalAttempt.status, 401);
+      assert.equal(finalAttempt.errorCategory, "auth");
+      assert.equal(finalAttempt.authMode, "basic");
+      assert.equal(finalAttempt.authUsername, "yu@example.com");
+      assert.equal(serialized.includes("wrong-password"), false);
+      assert.equal(serialized.includes("Authorization"), false);
+      return true;
+    }
+  );
+});
+
+test("does not leak Bearer tokens in diagnostics", async () => {
+  const provider = createDiscoveryProvider(async () => textResponse("Unauthorized", 401), "https://mail.example.com", {
+    authMode: "bearer",
+    authSecret: "sensitive-token"
+  });
+
+  await assert.rejects(
+    provider.discoverSession(),
+    (error) => {
+      const serialized = JSON.stringify(error.cause);
+
+      assert.equal(error.cause.authMode, "bearer");
+      assert.equal(error.cause.attemptedUrls[1].authMode, "bearer");
+      assert.equal(serialized.includes("sensitive-token"), false);
+      assert.equal(serialized.includes("Authorization"), false);
+      return true;
+    }
+  );
+});
+
 test("fetches and normalizes JMAP message detail body parts and attachments", async () => {
   const provider = new JmapProvider({
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: createFetchMock()
   });
 
@@ -666,7 +763,8 @@ test("creates and manually submits a JMAP email with reply metadata", async () =
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     jmapAccountId: "accountA",
     fetch: createSendFetchMock(requestLog)
   });
@@ -745,7 +843,8 @@ test("cleans up the temporary Email when JMAP submission fails after Email creat
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: createSendFetchMock(requestLog, "submission")
   });
 
@@ -780,7 +879,8 @@ test("warns when failed submission cleanup does not remove the server draft", as
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: createSendFetchMock(requestLog, "submission", "cleanup")
   });
 
@@ -805,7 +905,8 @@ test("rejects sending when the account lacks JMAP submission support", async () 
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: async (_url, init) => {
       if (init?.method !== "GET") {
         throw new Error("The provider must reject before issuing JMAP method calls.");
@@ -845,7 +946,8 @@ test("normalizes JMAP outgoing email creation failures into a send result", asyn
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
-    authSecret: "Bearer token",
+    authSecret: "token",
+    authMode: "bearer",
     fetch: createSendFetchMock([], "email")
   });
 

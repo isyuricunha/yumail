@@ -191,6 +191,12 @@ export interface SendMessageInput {
 }
 
 export type SendMessageStatus = "sent" | "failed";
+export type JmapAuthMode = "basic" | "bearer";
+
+export interface JmapAuthConfig {
+  mode: JmapAuthMode;
+  username?: string;
+}
 
 export interface SendMessageResult {
   status: SendMessageStatus;
@@ -314,6 +320,8 @@ export interface JmapDiscoveryAttempt {
   status?: number;
   redirectTarget?: string;
   authSent: boolean;
+  authMode: JmapAuthMode;
+  authUsername?: string;
   isJson?: boolean;
   missingFields: string[];
   errorCategory?: DiscoveryErrorCategory;
@@ -323,6 +331,8 @@ export interface JmapDiscoveryAttempt {
 export interface JmapConnectionDiagnostics {
   originalInput: string;
   normalizedInput?: string;
+  authMode: JmapAuthMode;
+  authUsername?: string;
   attemptedUrls: JmapDiscoveryAttempt[];
   supportsSubmission: boolean;
   message: string;
@@ -334,6 +344,8 @@ export interface JmapProviderOptions {
   emailAddress: EmailAddress;
   baseUrl: string;
   authSecret: string;
+  authMode?: JmapAuthMode;
+  authUsername?: string;
   jmapAccountId?: string;
   fetch?: FetchFunction;
 }
@@ -392,22 +404,44 @@ function getErrorMessage(error: unknown): string {
   return "Unknown error.";
 }
 
-export function createJmapAuthorizationHeader(authSecret: string, emailAddress: EmailAddress): string {
+function encodeBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binaryValue = "";
+
+  for (const byte of bytes) {
+    binaryValue += String.fromCharCode(byte);
+  }
+
+  return btoa(binaryValue);
+}
+
+export function normalizeJmapAuthMode(value: string | undefined): JmapAuthMode {
+  return value === "bearer" ? "bearer" : "basic";
+}
+
+export function getJmapBasicAuthUsername(
+  emailAddress: EmailAddress,
+  authUsername?: string
+): string {
+  return authUsername?.trim() || emailAddress.trim();
+}
+
+export function createJmapAuthorizationHeader(
+  authSecret: string,
+  emailAddress: EmailAddress,
+  authConfig: JmapAuthConfig = { mode: "basic" }
+): string {
   const trimmedSecret = authSecret.trim();
+  const authMode = normalizeJmapAuthMode(authConfig.mode);
 
-  if (/^(bearer|basic)\s+/iu.test(trimmedSecret)) {
-    return trimmedSecret;
+  if (authMode === "basic") {
+    return `Basic ${encodeBase64(`${getJmapBasicAuthUsername(
+      emailAddress,
+      authConfig.username
+    )}:${trimmedSecret}`)}`;
   }
 
-  if (trimmedSecret.toLowerCase().startsWith("password:")) {
-    return `Basic ${btoa(`${emailAddress}:${trimmedSecret.slice("password:".length)}`)}`;
-  }
-
-  if (trimmedSecret.includes(":")) {
-    return `Basic ${btoa(trimmedSecret)}`;
-  }
-
-  return `Bearer ${trimmedSecret}`;
+  return `Bearer ${trimmedSecret.replace(/^bearer\s+/iu, "")}`;
 }
 
 function normalizeJmapBaseUrlInput(value: string): URL {
@@ -779,7 +813,19 @@ function categorizeDiscoveryError(error: unknown): DiscoveryErrorCategory {
 }
 
 function createDiscoveryFailureMessage(attempts: JmapDiscoveryAttempt[]): string {
-  if (attempts.some((attempt) => attempt.errorCategory === "auth")) {
+  const authFailure = attempts.find((attempt) => attempt.errorCategory === "auth");
+
+  if (authFailure?.authMode === "basic") {
+    return authFailure.authUsername
+      ? `JMAP authentication was rejected for Basic Auth user ${authFailure.authUsername}. Check the email/username and password or app password.`
+      : "JMAP authentication was rejected for Basic Auth. Check the email/username and password or app password.";
+  }
+
+  if (authFailure?.authMode === "bearer") {
+    return "JMAP authentication was rejected for Bearer Auth. Check the token value.";
+  }
+
+  if (authFailure) {
     return "JMAP discovery reached the server, but authentication was rejected.";
   }
 
@@ -891,6 +937,8 @@ export class JmapProvider extends PlaceholderMailProvider {
   private readonly emailAddress: EmailAddress;
   private readonly baseUrl: string;
   private readonly authSecret: string;
+  private readonly authMode: JmapAuthMode;
+  private readonly authUsername?: string;
   private readonly configuredJmapAccountId?: string;
   private readonly fetchImpl: FetchFunction;
   private connectionInfo?: JmapConnectionInfo;
@@ -901,6 +949,8 @@ export class JmapProvider extends PlaceholderMailProvider {
     this.emailAddress = options.emailAddress;
     this.baseUrl = options.baseUrl;
     this.authSecret = options.authSecret;
+    this.authMode = normalizeJmapAuthMode(options.authMode);
+    this.authUsername = options.authUsername?.trim() || undefined;
     this.configuredJmapAccountId = options.jmapAccountId;
     this.fetchImpl = options.fetch ?? fetch;
   }
@@ -921,7 +971,7 @@ export class JmapProvider extends PlaceholderMailProvider {
       return this.connectionInfo;
     }
 
-    const authorization = createJmapAuthorizationHeader(this.authSecret, this.emailAddress);
+    const authorization = this.createAuthorizationHeader();
     const attemptedUrls: JmapDiscoveryAttempt[] = [];
     let normalizedInput: string | undefined;
 
@@ -961,7 +1011,9 @@ export class JmapProvider extends PlaceholderMailProvider {
             currentAttempt.errorCategory ??= response.status === 401 || response.status === 403
               ? "auth"
               : "server";
-            currentAttempt.errorMessage ??= `HTTP ${response.status}`;
+            currentAttempt.errorMessage ??= response.status === 401 || response.status === 403
+              ? `HTTP ${response.status} authentication rejected.`
+              : `HTTP ${response.status}`;
           }
           continue;
         }
@@ -1417,6 +1469,10 @@ export class JmapProvider extends PlaceholderMailProvider {
       const attempt: JmapDiscoveryAttempt = {
         url: currentUrl,
         authSent: shouldSendAuth,
+        authMode: this.authMode,
+        ...(this.authMode === "basic"
+          ? { authUsername: getJmapBasicAuthUsername(this.emailAddress, this.authUsername) }
+          : {}),
         missingFields: []
       };
       attemptedUrls.push(attempt);
@@ -1488,6 +1544,10 @@ export class JmapProvider extends PlaceholderMailProvider {
     return {
       originalInput: this.baseUrl,
       normalizedInput: input.normalizedInput,
+      authMode: this.authMode,
+      ...(this.authMode === "basic"
+        ? { authUsername: getJmapBasicAuthUsername(this.emailAddress, this.authUsername) }
+        : {}),
       attemptedUrls: input.attemptedUrls,
       supportsSubmission: input.supportsSubmission ?? false,
       message: input.message,
@@ -1496,6 +1556,8 @@ export class JmapProvider extends PlaceholderMailProvider {
           const details = [
             `url=${attempt.url}`,
             `authSent=${attempt.authSent}`,
+            `authMode=${attempt.authMode}`,
+            ...(attempt.authUsername ? [`authUsername=${attempt.authUsername}`] : []),
             ...(attempt.status === undefined ? [] : [`status=${attempt.status}`]),
             ...(attempt.redirectTarget ? [`redirect=${attempt.redirectTarget}`] : []),
             ...(attempt.finalUrl ? [`final=${attempt.finalUrl}`] : []),
@@ -1661,7 +1723,7 @@ export class JmapProvider extends PlaceholderMailProvider {
       method: "POST",
       headers: {
         "Accept": "application/json",
-        "Authorization": createJmapAuthorizationHeader(this.authSecret, this.emailAddress),
+        "Authorization": this.createAuthorizationHeader(),
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -1678,6 +1740,13 @@ export class JmapProvider extends PlaceholderMailProvider {
     }
 
     return parseMethodResponses(await response.json());
+  }
+
+  private createAuthorizationHeader(): string {
+    return createJmapAuthorizationHeader(this.authSecret, this.emailAddress, {
+      mode: this.authMode,
+      username: this.authUsername
+    });
   }
 
   private normalizeMessage(email: Record<string, unknown>, requestedMailboxId: EntityId): Message {

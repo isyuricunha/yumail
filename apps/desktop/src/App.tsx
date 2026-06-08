@@ -1109,6 +1109,7 @@ function SettingsScreen({
     displayName: mailState.accountConfig?.account.displayName ?? "",
     emailAddress: mailState.accountConfig?.account.emailAddress ?? "",
     jmapBaseUrl: mailState.accountConfig?.jmapBaseUrl ?? "",
+    authMode: mailState.accountConfig?.authMode ?? "basic",
     authSecret: ""
   });
 
@@ -1121,7 +1122,8 @@ function SettingsScreen({
       ...currentValue,
       displayName: mailState.accountConfig?.account.displayName ?? "",
       emailAddress: mailState.accountConfig?.account.emailAddress ?? "",
-      jmapBaseUrl: mailState.accountConfig?.jmapBaseUrl ?? ""
+      jmapBaseUrl: mailState.accountConfig?.jmapBaseUrl ?? "",
+      authMode: mailState.accountConfig?.authMode ?? "basic"
     }));
   }, [mailState.accountConfig]);
 
@@ -1137,6 +1139,7 @@ function SettingsScreen({
       displayName: formState.displayName.trim(),
       emailAddress: formState.emailAddress.trim(),
       jmapBaseUrl: formState.jmapBaseUrl.trim(),
+      authMode: formState.authMode,
       authSecret: formState.authSecret.trim()
     };
 
@@ -1189,14 +1192,25 @@ function SettingsScreen({
           />
         </label>
         <label className="field-stack">
+          <Typography as="span" variant="caption" muted>Authentication</Typography>
+          <select
+            className="ym-input"
+            value={formState.authMode}
+            onChange={(event) => updateFormField("authMode", event.target.value as JmapAccountSetupInput["authMode"])}
+          >
+            <option value="basic">Password / Basic Auth</option>
+            <option value="bearer">Bearer token</option>
+          </select>
+        </label>
+        <label className="field-stack">
           <Typography as="span" variant="caption" muted>
-            Auth token or password
+            {formState.authMode === "basic" ? "Password or app password" : "Bearer token"}
             {mailState.accountConfig ? " (leave blank to test saved credentials)" : ""}
           </Typography>
           <Input
             value={formState.authSecret}
             onChange={(event) => updateFormField("authSecret", event.target.value)}
-            placeholder="Bearer token, Basic header, password:secret, or user:password"
+            placeholder={formState.authMode === "basic" ? "Mailbox password or app password" : "Provider bearer token"}
             type="password"
             required={!mailState.accountConfig}
           />
@@ -1277,6 +1291,10 @@ function DiagnosticsPanel({
           API: {connectionTest.apiUrl}
         </Typography>
       ) : null}
+      <Typography variant="caption" muted>
+        Auth: {diagnostics.authMode}
+        {diagnostics.authUsername ? ` as ${diagnostics.authUsername}` : ""}
+      </Typography>
       <div className="diagnostics-list">
         {diagnostics.attemptedUrls.map((attempt, index) => (
           <div className="diagnostics-item" key={`${attempt.url}-${index}`}>
@@ -1285,7 +1303,8 @@ function DiagnosticsPanel({
               {attempt.url}
             </Typography>
             <Typography variant="caption" muted>
-              Auth {attempt.authSent ? "sent" : "not sent"}
+              Auth {attempt.authSent ? "sent" : "not sent"} ({attempt.authMode}
+              {attempt.authUsername ? ` as ${attempt.authUsername}` : ""})
               {attempt.redirectTarget ? ` · Redirect ${attempt.redirectTarget}` : ""}
               {attempt.finalUrl ? ` · Final ${attempt.finalUrl}` : ""}
               {attempt.isJson === false ? " · Invalid JSON" : ""}

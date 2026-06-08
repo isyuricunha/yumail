@@ -1,5 +1,6 @@
 import type {
   Account,
+  JmapAuthMode,
   LocalDraft,
   Mailbox,
   Message,
@@ -13,7 +14,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 5;
+export const INITIAL_SCHEMA_VERSION = 6;
 
 export const migrations: Migration[] = [
   {
@@ -37,9 +38,14 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0004_local_drafts.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 5,
     name: "jmap_session_url",
     path: "packages/db/migrations/0005_jmap_session_url.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "jmap_auth_mode",
+    path: "packages/db/migrations/0006_jmap_auth_mode.sql"
   }
 ];
 
@@ -72,6 +78,8 @@ export interface StoredJmapAccountConfig {
   account: Account;
   jmapBaseUrl: string;
   credentialReference: string;
+  authMode: JmapAuthMode;
+  authUsername?: string;
   jmapAccountId?: string;
   sessionUrl?: string;
   sessionApiUrl?: string;

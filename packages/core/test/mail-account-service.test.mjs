@@ -344,15 +344,17 @@ test("saves JMAP account metadata and keeps the secret out of metadata storage",
     displayName: "Yu",
     emailAddress: "yu@example.com",
     jmapBaseUrl: "https://mail.example.com",
-    authSecret: "Bearer super-secret"
+    authMode: "basic",
+    authSecret: "super-secret"
   });
   const serializedMetadata = JSON.stringify(await repository.loadSnapshot());
 
   assert.equal(state.accountConfig?.account.emailAddress, "yu@example.com");
   assert.equal(state.mailboxes[0].role, "inbox");
   assert.equal(state.inboxMessages[0].subject, "Persist me");
+  assert.equal(state.accountConfig.authMode, "basic");
   assert.equal(serializedMetadata.includes("super-secret"), false);
-  assert.equal(Object.values(secretStorage.secrets).includes("Bearer super-secret"), true);
+  assert.equal(Object.values(secretStorage.secrets).includes("super-secret"), true);
 });
 
 test("reloads saved JMAP credentials by reference through secure storage", async () => {
@@ -367,7 +369,8 @@ test("reloads saved JMAP credentials by reference through secure storage", async
     displayName: "Yu",
     emailAddress: "yu@example.com",
     jmapBaseUrl: "https://mail.example.com",
-    authSecret: "Bearer super-secret"
+    authMode: "basic",
+    authSecret: "super-secret"
   });
 
   await service.refreshInbox(savedState.accountConfig.account.id);
@@ -389,13 +392,15 @@ test("tests a saved JMAP account using its secure-storage reference", async () =
     displayName: "Yu",
     emailAddress: "yu@example.com",
     jmapBaseUrl: "https://mail.example.com",
-    authSecret: "Bearer super-secret"
+    authMode: "basic",
+    authSecret: "super-secret"
   });
 
   const result = await service.testJmapConnection({
     displayName: "Yu",
     emailAddress: "yu@example.com",
     jmapBaseUrl: "https://mail.example.com",
+    authMode: "basic",
     authSecret: ""
   });
 
@@ -419,7 +424,8 @@ test("loads message detail from the provider once and then uses the local cache"
     displayName: "Yu",
     emailAddress: "yu@example.com",
     jmapBaseUrl: "https://mail.example.com",
-    authSecret: "Bearer super-secret"
+    authMode: "basic",
+    authSecret: "super-secret"
   });
   const message = accountState.inboxMessages[0];
   const readingService = createThreadReadingService({
@@ -522,7 +528,7 @@ test("sends only on explicit service call and removes a successful draft", async
   const accountConfig = createStoredAccountConfig();
   repository.snapshot.accountConfigs = [accountConfig];
   const secretStorage = new MemorySecretStorage();
-  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  secretStorage.secrets[accountConfig.credentialReference] = "secure-token";
   const requestLog = [];
   const service = createComposeService({
     metadataRepository: repository,
@@ -541,7 +547,7 @@ test("sends only on explicit service call and removes a successful draft", async
 
   assert.equal(requestLog.length, 0);
   assert.equal(
-    JSON.stringify(repository.drafts).includes("Bearer secure-token"),
+    JSON.stringify(repository.drafts).includes("secure-token"),
     false
   );
   const result = await service.sendDraft(draft.id);
@@ -559,7 +565,7 @@ test("keeps a local draft when JMAP submission fails", async () => {
   const accountConfig = createStoredAccountConfig();
   repository.snapshot.accountConfigs = [accountConfig];
   const secretStorage = new MemorySecretStorage();
-  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  secretStorage.secrets[accountConfig.credentialReference] = "secure-token";
   const service = createComposeService({
     metadataRepository: repository,
     secretStorage,
@@ -585,10 +591,10 @@ test("keeps a local draft when JMAP submission fails", async () => {
   assert.match(result.errorMessage, /Submission rejected/u);
   assert.equal((await service.getDraft(draft.id)).bodyText, "Keep this draft");
   assert.equal(
-    JSON.stringify(repository.drafts).includes("Bearer secure-token"),
+    JSON.stringify(repository.drafts).includes("secure-token"),
     false
   );
-  assert.equal(JSON.stringify(result).includes("Bearer secure-token"), false);
+  assert.equal(JSON.stringify(result).includes("secure-token"), false);
 });
 
 test("blocks invalid recipients before credential or provider access", async () => {
@@ -596,7 +602,7 @@ test("blocks invalid recipients before credential or provider access", async () 
   const accountConfig = createStoredAccountConfig();
   repository.snapshot.accountConfigs = [accountConfig];
   const secretStorage = new MemorySecretStorage();
-  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  secretStorage.secrets[accountConfig.credentialReference] = "secure-token";
   const requestLog = [];
   const service = createComposeService({
     metadataRepository: repository,
@@ -639,6 +645,7 @@ function createStoredAccountConfig() {
     },
     jmapBaseUrl: "https://mail.example.com",
     credentialReference: "credential:jmap:yu",
+    authMode: "bearer",
     jmapAccountId: "accountA"
   };
 }

@@ -126,6 +126,17 @@ Secrets are not stored in SQLite rows or ordinary browser storage. Account recor
 only a credential reference. The Tauri secure-storage adapter resolves that reference
 through Windows Credential Manager, macOS Keychain, or Linux Secret Service.
 
+Authentication is explicit:
+
+- `Password / Basic Auth` is the default and sends
+  `Authorization: Basic <base64(email:password)>`.
+- `Bearer token` sends `Authorization: Bearer <token>` and is intended for servers
+  that issue bearer tokens.
+
+For a Stalwart password or app-password setup, choose `Password / Basic Auth`, use the
+mailbox email address in the email field, and enter only the password/app-password in
+the secret field. Do not include `Bearer`, `Basic`, `password:`, or `user:` prefixes.
+
 The JMAP base URL field accepts any of these formats:
 
 - `example.com`
@@ -142,8 +153,9 @@ session URLs as-is, tries `/.well-known/jmap` for root URLs, and falls back to
 Authorization is preserved only across same-origin redirects.
 
 Connection diagnostics show attempted URLs, status codes, redirect targets, final URLs,
-JSON/session validation status, whether auth was sent, and a safe user-facing failure
-category. They never display credentials. A real Stalwart regression covered by tests:
+JSON/session validation status, whether auth was sent, auth mode, Basic username, and a
+safe user-facing failure category. They never display credentials. A real Stalwart
+regression covered by tests:
 `https://mail.yuricunha.com/.well-known/jmap` redirects to `/jmap/session`; this is
 handled generically without hardcoding that domain.
 
@@ -167,11 +179,13 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001 through 0005.
+- Rust registers migrations 0001 through 0006.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
   tags, body cache, attachments, local drafts, sync states, and preferences persist in
   SQLite.
+- JMAP account rows store auth mode and optional non-secret username metadata. Passwords
+  and tokens remain only in the operating system credential manager.
 
 The database lives in Tauri's app configuration directory. With the current
 `com.yumail.desktop` identifier, the expected locations are:

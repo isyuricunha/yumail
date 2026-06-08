@@ -32,6 +32,8 @@ interface AccountConfigRow {
   updated_at: string;
   jmap_base_url: string;
   credential_reference: string;
+  auth_mode: string;
+  auth_username: string | null;
   jmap_account_id: string | null;
   session_url: string | null;
   session_api_url: string | null;
@@ -153,6 +155,8 @@ const ACCOUNT_CONFIG_SELECT = `
     accounts.updated_at,
     jmap_account_configs.jmap_base_url,
     jmap_account_configs.credential_reference,
+    jmap_account_configs.auth_mode,
+    jmap_account_configs.auth_username,
     jmap_account_configs.jmap_account_id,
     jmap_account_configs.session_url,
     jmap_account_configs.session_api_url,
@@ -287,14 +291,18 @@ implements MailMetadataRepository, UserPreferenceRepository {
         account_id,
         jmap_base_url,
         credential_reference,
+        auth_mode,
+        auth_username,
         jmap_account_id,
         session_url,
         session_api_url,
         last_connected_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         jmap_base_url = excluded.jmap_base_url,
         credential_reference = excluded.credential_reference,
+        auth_mode = excluded.auth_mode,
+        auth_username = excluded.auth_username,
         jmap_account_id = excluded.jmap_account_id,
         session_url = excluded.session_url,
         session_api_url = excluded.session_api_url,
@@ -303,6 +311,8 @@ implements MailMetadataRepository, UserPreferenceRepository {
       account.id,
       accountConfig.jmapBaseUrl,
       accountConfig.credentialReference,
+      accountConfig.authMode,
+      accountConfig.authUsername ?? null,
       accountConfig.jmapAccountId ?? null,
       accountConfig.sessionUrl ?? null,
       accountConfig.sessionApiUrl ?? null,
@@ -986,6 +996,8 @@ function mapAccountConfig(row: AccountConfigRow): StoredJmapAccountConfig {
     },
     jmapBaseUrl: row.jmap_base_url,
     credentialReference: row.credential_reference,
+    authMode: row.auth_mode === "bearer" ? "bearer" : "basic",
+    authUsername: row.auth_username ?? undefined,
     jmapAccountId: row.jmap_account_id ?? undefined,
     sessionUrl: row.session_url ?? undefined,
     sessionApiUrl: row.session_api_url ?? undefined,

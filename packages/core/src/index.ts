@@ -6,6 +6,7 @@ import type {
 } from "@yumail/db";
 import type {
   GetMessageInput,
+  JmapAuthMode,
   JmapConnectionDiagnostics,
   LocalDraft,
   Mailbox,
@@ -50,6 +51,7 @@ export interface JmapAccountSetupInput {
   displayName: string;
   emailAddress: string;
   jmapBaseUrl: string;
+  authMode: JmapAuthMode;
   authSecret: string;
 }
 
@@ -316,6 +318,8 @@ class DefaultComposeService implements ComposeService {
       emailAddress: accountConfig.account.emailAddress,
       baseUrl: accountConfig.jmapBaseUrl,
       authSecret: secret,
+      authMode: accountConfig.authMode,
+      authUsername: accountConfig.authUsername,
       jmapAccountId: accountConfig.jmapAccountId,
       fetch: this.fetchImpl
     });
@@ -439,6 +443,8 @@ class DefaultThreadReadingService implements ThreadReadingService {
       emailAddress: accountConfig.account.emailAddress,
       baseUrl: accountConfig.jmapBaseUrl,
       authSecret: secret,
+      authMode: accountConfig.authMode,
+      authUsername: accountConfig.authUsername,
       fetch: this.fetchImpl
     });
     const messageDetail = await provider.getMessage({
@@ -548,6 +554,7 @@ class DefaultMailAccountService implements MailAccountService {
       },
       jmapBaseUrl: input.jmapBaseUrl.trim(),
       credentialReference,
+      authMode: normalizeJmapAccountAuthMode(input.authMode),
       jmapAccountId: connectionInfo.jmapAccountId,
       sessionUrl: connectionInfo.sessionUrl,
       sessionApiUrl: connectionInfo.apiUrl,
@@ -598,6 +605,7 @@ class DefaultMailAccountService implements MailAccountService {
         displayName: accountConfig.account.displayName,
         emailAddress: accountConfig.account.emailAddress,
         jmapBaseUrl: accountConfig.jmapBaseUrl,
+        authMode: accountConfig.authMode,
         authSecret: secret
       },
       secret
@@ -655,6 +663,7 @@ class DefaultMailAccountService implements MailAccountService {
       emailAddress: input.emailAddress,
       baseUrl: input.jmapBaseUrl,
       authSecret,
+      authMode: normalizeJmapAccountAuthMode(input.authMode),
       fetch: this.fetchImpl
     });
   }
@@ -845,6 +854,10 @@ function normalizeRecipients(recipients: Recipient[]): Recipient[] {
 
 function isValidEmailAddress(value: string): boolean {
   return /^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[^\s@<>(),;:]+$/u.test(value);
+}
+
+function normalizeJmapAccountAuthMode(value: JmapAuthMode | undefined): JmapAuthMode {
+  return value === "bearer" ? "bearer" : "basic";
 }
 
 function isJmapConnectionDiagnostics(value: unknown): value is JmapConnectionDiagnostics {
