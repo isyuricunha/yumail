@@ -36,7 +36,8 @@ import type {
   LocalDraft,
   Message,
   MessageDetail,
-  Recipient
+  Recipient,
+  SendMessageResult
 } from "@yumail/mail";
 import { createEmailRenderer, type RenderedEmail } from "@yumail/renderer";
 import {
@@ -426,6 +427,13 @@ export function App() {
       setActiveDraft(savedDraft);
       setIsDraftDirty(false);
       const result = await mailServices.composeService.sendDraft(savedDraft.id);
+
+      if (result.failed) {
+        setDraftSaveStatus("error");
+        setDraftStatusMessage(formatSendFailureStatus(result));
+        return;
+      }
+
       setDrafts((currentDrafts) => (
         currentDrafts.filter((draft) => draft.id !== savedDraft.id)
       ));
@@ -433,7 +441,7 @@ export function App() {
       setDraftEditor(emptyDraftEditor);
       setDraftSaveStatus("saved");
       setDraftStatusMessage(
-        `Message submitted at ${formatFullMessageDate(result.sentAt)}.`
+        `Message submitted at ${formatFullMessageDate(result.sentAt ?? new Date().toISOString())}.`
       );
     } catch (error) {
       setDraftSaveStatus("error");
@@ -1311,7 +1319,19 @@ function createDraftEditorState(draft: LocalDraft): DraftEditorState {
 }
 
 function formatRecipientInput(recipients: Recipient[]): string {
-  return recipients.map(formatRecipient).join(", ");
+  return recipients.map(formatRecipientForInput).join(", ");
+}
+
+function formatRecipientForInput(recipient: Recipient): string {
+  if (!recipient.name) {
+    return recipient.address;
+  }
+
+  const displayName = /[",;<>]/u.test(recipient.name)
+    ? `"${recipient.name.replace(/(["\\])/gu, "\\$1")}"`
+    : recipient.name;
+
+  return `${displayName} <${recipient.address}>`;
 }
 
 function formatDraftRecipients(draft: LocalDraft): string {
@@ -1334,6 +1354,20 @@ function formatDraftSaveStatus(status: DraftSaveStatus): string {
     default:
       return "Local draft";
   }
+}
+
+function formatSendFailureStatus(result: SendMessageResult): string {
+  const baseMessage = result.errorMessage ?? "Message submission failed.";
+
+  if (result.serverDraftMayRemain) {
+    return `${baseMessage} The local draft is still saved, but a temporary server draft may remain.`;
+  }
+
+  if (result.cleanupAttempted && result.cleanupSucceeded) {
+    return `${baseMessage} The temporary server draft was cleaned up and the local draft is still saved.`;
+  }
+
+  return `${baseMessage} The local draft is still saved.`;
 }
 
 function formatFileSize(sizeBytes: number): string {

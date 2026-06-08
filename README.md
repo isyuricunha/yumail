@@ -202,6 +202,8 @@ Milestone 3 adds a plain-text compose workflow:
 - Reply drafts use Reply-To when available, preserve the subject, and retain RFC
   Message-ID reference context.
 - Recipient validation runs before submission.
+- Recipient parsing supports display names, including quoted display names with commas,
+  such as `"Lovelace, Ada" <ada@example.com>`.
 - The secure credential reference is resolved only when the user clicks Send.
 - Successful submission removes the local draft; failed submission leaves it available
   for correction or retry.
@@ -211,8 +213,62 @@ sends one JMAP request containing `Email/set` followed by `EmailSubmission/set`.
 submission references the newly created Email by its creation id.
 `onSuccessUpdateEmail` removes the draft keyword and transitions the Email to Sent.
 
+If `Email/set` succeeds but `EmailSubmission/set` fails, YuMail attempts one
+best-effort `Email/set` cleanup that destroys only the temporary Email created for that
+failed send. Cleanup success or failure is returned in the normalized send result, and
+the local draft is retained unless the result is confirmed as sent.
+
 Drafts are local-only. Provider-side draft synchronization, outgoing attachments, rich
 text/HTML composition, scheduled send, and send queues are deferred.
+
+## Windows/Stalwart Smoke Test
+
+Use this checklist before starting AI integration. It does not require committing real
+credentials and should be run with a disposable or self-hosted test mailbox.
+
+### Commands
+
+Run from PowerShell on Windows:
+
+```powershell
+pnpm install
+rustup default stable-msvc
+pnpm test
+pnpm check
+pnpm build
+pnpm --filter @yumail/desktop tauri:dev
+```
+
+### UI Checklist
+
+1. Open Settings and enter display name, email address, JMAP base URL, and credential.
+2. Click Test and confirm the account connection test reports mailbox access.
+3. Click Save and confirm Inbox metadata appears.
+4. Click an Inbox message and confirm the reading panel loads full message detail.
+5. Click Compose, enter a self-addressed recipient, subject, and body, then wait for
+   the local draft saved state.
+6. Close and reopen the Tauri dev app, then confirm the local draft reloads.
+7. Send the self-addressed draft manually and confirm the success state.
+8. Refresh Inbox and verify the self-addressed message can be read.
+9. Repeat with Reply from an opened message and send the reply to yourself.
+
+### Local State Checks
+
+- SQLite path on Windows:
+  `%APPDATA%\com.yumail.desktop\yumail.sqlite3`
+- Confirm account metadata, mailboxes, message cache, and local drafts persist there.
+- Confirm the SQLite database contains credential references only, not auth tokens or
+  passwords.
+- Open Windows Credential Manager and confirm YuMail has a credential entry after
+  saving an account.
+- If a send fails after the server creates a temporary outgoing Email, verify the UI
+  warning says whether cleanup succeeded or a server draft may remain.
+
+### Safe Send Notes
+
+- Use a self-addressed message for the first send test.
+- Do not test with attachments yet; outgoing attachment upload is deferred.
+- Do not use AI settings or actions; AI integration starts in the next milestone.
 
 ## Important Guardrails
 

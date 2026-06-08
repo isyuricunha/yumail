@@ -190,12 +190,24 @@ export interface SendMessageInput {
   };
 }
 
+export type SendMessageStatus = "sent" | "failed";
+
 export interface SendMessageResult {
-  providerMessageId: string;
+  status: SendMessageStatus;
+  sent: boolean;
+  failed: boolean;
+  cleanupAttempted: boolean;
+  cleanupSucceeded: boolean;
+  serverDraftMayRemain: boolean;
+  providerMessageId?: string;
   providerSubmissionId?: string;
+  submissionId?: string;
   providerThreadId?: string;
   messageId?: EntityId;
-  sentAt: IsoDateTime;
+  sentAt?: IsoDateTime;
+  errorCode?: string;
+  errorMessage?: string;
+  cleanupErrorMessage?: string;
 }
 
 export interface ReplyMessageInput extends SendMessageInput {
@@ -627,6 +639,32 @@ function getCreatedRecord(
   });
 }
 
+function readSetFailure(
+  response: Record<string, unknown>,
+  category: "notCreated" | "notDestroyed",
+  id: string,
+  operation: string
+): { code: string; message: string; cause?: unknown } | undefined {
+  const failures = getRecord(response, category);
+  const error = failures?.[id];
+  const errorRecord = isRecord(error) ? error : undefined;
+
+  if (!errorRecord) {
+    return undefined;
+  }
+
+  const errorType = getString(errorRecord, "type");
+  const description = getString(errorRecord, "description");
+
+  return {
+    code: `jmap_${operation}_failed`,
+    message: description
+      ? `JMAP ${operation} failed: ${description}`
+      : `JMAP ${operation} failed${errorType ? ` (${errorType})` : ""}.`,
+    cause: errorRecord
+  };
+}
+
 function parseMethodResponses(responseBody: unknown): JmapMethodResponse[] {
   if (!isRecord(responseBody) || !Array.isArray(responseBody.methodResponses)) {
     throw new YuMailError({
@@ -1044,29 +1082,98 @@ export class JmapProvider extends PlaceholderMailProvider {
       "Email/set",
       "create-outgoing-email"
     );
+    const emailFailure = readSetFailure(
+      emailResponse,
+      "notCreated",
+      emailCreationId,
+      "email_create"
+    );
+
+    if (emailFailure) {
+      return this.createFailedSendResult({
+        errorCode: emailFailure.code,
+        errorMessage: emailFailure.message
+      });
+    }
+
+    const createdEmail = getCreatedRecord(emailResponse, emailCreationId, "email_create");
+    const providerMessageId = getString(createdEmail, "id");
+
+    if (!providerMessageId) {
+      return this.createFailedSendResult({
+        errorCode: "jmap_invalid_send_response",
+        errorMessage: "JMAP did not return an id for the created outgoing email.",
+        serverDraftMayRemain: true
+      });
+    }
+
     const submissionResponse = getMethodResponse(
       methodResponses,
       "EmailSubmission/set",
       "submit-outgoing-email"
     );
-    const createdEmail = getCreatedRecord(emailResponse, emailCreationId, "email_create");
+    const submissionFailure = readSetFailure(
+      submissionResponse,
+      "notCreated",
+      submissionCreationId,
+      "submission"
+    );
+
+    if (submissionFailure) {
+      const cleanup = await this.cleanupFailedOutgoingEmail(
+        connectionInfo.jmapAccountId,
+        providerMessageId
+      );
+
+      return this.createFailedSendResult({
+        providerMessageId,
+        messageId: createMessageEntityId(this.localAccountId, providerMessageId),
+        providerThreadId: getString(createdEmail, "threadId"),
+        errorCode: submissionFailure.code,
+        errorMessage: submissionFailure.message,
+        cleanupAttempted: cleanup.attempted,
+        cleanupSucceeded: cleanup.succeeded,
+        cleanupErrorMessage: cleanup.errorMessage,
+        serverDraftMayRemain: !cleanup.succeeded
+      });
+    }
+
     const createdSubmission = getCreatedRecord(
       submissionResponse,
       submissionCreationId,
       "submission"
     );
-    const providerMessageId = getString(createdEmail, "id");
+    const submissionId = getString(createdSubmission, "id");
 
-    if (!providerMessageId) {
-      throw new YuMailError({
-        code: "jmap_invalid_send_response",
-        message: "JMAP did not return an id for the created outgoing email."
+    if (!submissionId) {
+      const cleanup = await this.cleanupFailedOutgoingEmail(
+        connectionInfo.jmapAccountId,
+        providerMessageId
+      );
+
+      return this.createFailedSendResult({
+        providerMessageId,
+        messageId: createMessageEntityId(this.localAccountId, providerMessageId),
+        providerThreadId: getString(createdEmail, "threadId"),
+        errorCode: "jmap_invalid_submission_response",
+        errorMessage: "JMAP did not return an id for the created submission.",
+        cleanupAttempted: cleanup.attempted,
+        cleanupSucceeded: cleanup.succeeded,
+        cleanupErrorMessage: cleanup.errorMessage,
+        serverDraftMayRemain: !cleanup.succeeded
       });
     }
 
     return {
+      status: "sent",
+      sent: true,
+      failed: false,
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      serverDraftMayRemain: false,
       providerMessageId,
-      providerSubmissionId: getString(createdSubmission, "id"),
+      providerSubmissionId: submissionId,
+      submissionId,
       providerThreadId:
         getString(createdSubmission, "threadId") ?? getString(createdEmail, "threadId"),
       messageId: createMessageEntityId(this.localAccountId, providerMessageId),
@@ -1394,6 +1501,87 @@ export class JmapProvider extends PlaceholderMailProvider {
       ...(mailboxSelection.sentMailboxId !== mailboxSelection.sourceMailboxId
         ? { [`mailboxIds/${sourceMailboxPath}`]: null }
         : {})
+    };
+  }
+
+  private async cleanupFailedOutgoingEmail(
+    jmapAccountId: string,
+    providerMessageId: string
+  ): Promise<{ attempted: true; succeeded: boolean; errorMessage?: string }> {
+    try {
+      const methodResponses = await this.callJmap([
+        [
+          "Email/set",
+          {
+            accountId: jmapAccountId,
+            destroy: [providerMessageId]
+          },
+          "cleanup-failed-outgoing-email"
+        ]
+      ]);
+      const response = getMethodResponse(
+        methodResponses,
+        "Email/set",
+        "cleanup-failed-outgoing-email"
+      );
+      const destroyed = Array.isArray(response.destroyed)
+        ? response.destroyed
+        : [];
+
+      if (destroyed.includes(providerMessageId)) {
+        return {
+          attempted: true,
+          succeeded: true
+        };
+      }
+
+      const failure = readSetFailure(
+        response,
+        "notDestroyed",
+        providerMessageId,
+        "email_cleanup"
+      );
+
+      return {
+        attempted: true,
+        succeeded: false,
+        errorMessage: failure?.message ?? "JMAP cleanup did not confirm the temporary draft was removed."
+      };
+    } catch (error) {
+      return {
+        attempted: true,
+        succeeded: false,
+        errorMessage: error instanceof Error
+          ? error.message
+          : "JMAP cleanup failed."
+      };
+    }
+  }
+
+  private createFailedSendResult(input: {
+    providerMessageId?: string;
+    providerThreadId?: string;
+    messageId?: EntityId;
+    errorCode: string;
+    errorMessage: string;
+    cleanupAttempted?: boolean;
+    cleanupSucceeded?: boolean;
+    cleanupErrorMessage?: string;
+    serverDraftMayRemain?: boolean;
+  }): SendMessageResult {
+    return {
+      status: "failed",
+      sent: false,
+      failed: true,
+      cleanupAttempted: input.cleanupAttempted ?? false,
+      cleanupSucceeded: input.cleanupSucceeded ?? false,
+      serverDraftMayRemain: input.serverDraftMayRemain ?? false,
+      providerMessageId: input.providerMessageId,
+      providerThreadId: input.providerThreadId,
+      messageId: input.messageId,
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
+      cleanupErrorMessage: input.cleanupErrorMessage
     };
   }
 }

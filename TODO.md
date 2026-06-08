@@ -76,6 +76,19 @@
 - [x] Add an empty Cargo `[package.metadata]` table.
 - [x] Document Windows Rust/MSVC/WebView2/keyring prerequisites and next commands.
 
+## Milestone 3.5 - Compose Send Hardening
+
+- [x] Return structured send results for JMAP success and failure outcomes.
+- [x] Attempt best-effort server cleanup when Email creation succeeds but submission
+  creation fails.
+- [x] Warn when failed-send cleanup does not confirm removal of the server draft.
+- [x] Keep local drafts unless send is confirmed successful or the user discards them.
+- [x] Parse display names and quoted display names containing commas.
+- [x] Validate To/Cc/Bcc with user-facing recipient errors.
+- [x] Test cleanup success, cleanup warning, draft retention, parser edge cases, and
+  secret-free send results.
+- [x] Add a Windows/Stalwart live smoke-test checklist before AI integration.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.

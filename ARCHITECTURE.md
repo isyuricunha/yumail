@@ -93,10 +93,18 @@ JMAP submission remains fully inside `JmapProvider`:
 5. `EmailSubmission/set` references that Email creation in the same JMAP request.
 6. `onSuccessUpdateEmail` removes `$draft`, moves the Email to Sent, and removes the
    temporary Drafts membership.
+7. If Email creation succeeds but submission creation fails, YuMail makes one
+   best-effort `Email/set` cleanup request that destroys only the just-created outgoing
+   Email. The local draft remains available either way.
 
 Replies include JMAP `inReplyTo` and `references` values derived from normalized RFC
 message identifiers. Provider message/thread IDs remain internal context and never leak
 into React protocol logic.
+
+Send results are normalized into a detail model with `sent`, `failed`,
+`cleanupAttempted`, `cleanupSucceeded`, `serverDraftMayRemain`, provider ids where
+available, and a user-facing error message. This gives React enough information to
+display retry-safe warnings without depending on JMAP response shapes.
 
 ### `packages/ai`
 

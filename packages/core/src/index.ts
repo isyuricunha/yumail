@@ -115,6 +115,7 @@ export interface RecipientValidationResult {
   isValid: boolean;
   invalidAddresses: string[];
   recipientCount: number;
+  message: string;
 }
 
 export interface ComposeService {
@@ -144,23 +145,10 @@ export function createComposeService(
 }
 
 export function parseRecipientInput(value: string): Recipient[] {
-  return value
-    .split(/[,;\n]+/u)
+  return splitRecipientInput(value)
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((entry) => {
-      const addressMatch = entry.match(/^(.*?)<([^<>]+)>$/u);
-
-      if (!addressMatch) {
-        return { address: entry };
-      }
-
-      const name = addressMatch[1]?.trim().replace(/^["']|["']$/gu, "");
-      return {
-        ...(name ? { name } : {}),
-        address: addressMatch[2]?.trim() ?? ""
-      };
-    });
+    .map(parseRecipientToken);
 }
 
 export function validateRecipients(
@@ -175,10 +163,20 @@ export function validateRecipients(
     .map((recipient) => recipient.address.trim())
     .filter((address) => !isValidEmailAddress(address));
 
+  const recipientCount = recipients.length;
+  const message = recipientCount === 0
+    ? "Add at least one recipient before sending."
+    : invalidAddresses.length === 0
+      ? ""
+      : invalidAddresses.length === 1
+        ? `Correct this recipient address before sending: ${invalidAddresses[0]}.`
+        : `Correct these recipient addresses before sending: ${invalidAddresses.join(", ")}.`;
+
   return {
     isValid: recipients.length > 0 && invalidAddresses.length === 0,
     invalidAddresses,
-    recipientCount: recipients.length
+    recipientCount,
+    message
   };
 }
 
@@ -296,9 +294,7 @@ class DefaultComposeService implements ComposeService {
         code: validation.recipientCount === 0
           ? "missing_recipients"
           : "invalid_recipients",
-        message: validation.recipientCount === 0
-          ? "Add at least one recipient before sending."
-          : `Correct these recipient addresses before sending: ${validation.invalidAddresses.join(", ")}.`
+        message: validation.message
       });
     }
 
@@ -349,7 +345,10 @@ class DefaultComposeService implements ComposeService {
       })
       : await provider.sendMessage(sendInput);
 
-    await this.metadataRepository.deleteDraft(draft.id);
+    if (result.sent) {
+      await this.metadataRepository.deleteDraft(draft.id);
+    }
+
     return result;
   }
 
@@ -707,6 +706,87 @@ class DefaultMailAccountService implements MailAccountService {
 function findInboxMailbox(mailboxes: Mailbox[]): Mailbox | undefined {
   return mailboxes.find((mailbox) => mailbox.role === "inbox")
     ?? mailboxes.find((mailbox) => mailbox.name.toLowerCase() === "inbox");
+}
+
+function splitRecipientInput(value: string): string[] {
+  const entries: string[] = [];
+  let currentEntry = "";
+  let isQuoted = false;
+  let isEscaped = false;
+  let angleDepth = 0;
+
+  for (const character of value) {
+    if (isEscaped) {
+      currentEntry += character;
+      isEscaped = false;
+      continue;
+    }
+
+    if (character === "\\" && isQuoted) {
+      currentEntry += character;
+      isEscaped = true;
+      continue;
+    }
+
+    if (character === "\"") {
+      isQuoted = !isQuoted;
+      currentEntry += character;
+      continue;
+    }
+
+    if (!isQuoted && character === "<") {
+      angleDepth += 1;
+      currentEntry += character;
+      continue;
+    }
+
+    if (!isQuoted && character === ">" && angleDepth > 0) {
+      angleDepth -= 1;
+      currentEntry += character;
+      continue;
+    }
+
+    if (!isQuoted && angleDepth === 0 && (
+      character === "," || character === ";" || character === "\n"
+    )) {
+      entries.push(currentEntry);
+      currentEntry = "";
+      continue;
+    }
+
+    currentEntry += character;
+  }
+
+  entries.push(currentEntry);
+  return entries;
+}
+
+function parseRecipientToken(value: string): Recipient {
+  const addressMatch = value.match(/^(.*?)<([^<>]+)>$/u);
+
+  if (!addressMatch) {
+    return { address: unquoteDisplayName(value).trim() };
+  }
+
+  const name = unquoteDisplayName(addressMatch[1]?.trim() ?? "");
+
+  return {
+    ...(name ? { name } : {}),
+    address: addressMatch[2]?.trim() ?? ""
+  };
+}
+
+function unquoteDisplayName(value: string): string {
+  const trimmedValue = value.trim();
+
+  if (trimmedValue.length >= 2 && trimmedValue.startsWith("\"") && trimmedValue.endsWith("\"")) {
+    return trimmedValue
+      .slice(1, -1)
+      .replace(/\\(["\\])/gu, "$1")
+      .trim();
+  }
+
+  return trimmedValue.replace(/^['"]|['"]$/gu, "").trim();
 }
 
 function createReplySubject(subject: string): string {

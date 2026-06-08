@@ -219,7 +219,7 @@ function createFetchMock() {
   };
 }
 
-function createSendFetchMock(requestLog, failureType) {
+function createSendFetchMock(requestLog, failureType, cleanupFailureType) {
   return async (_url, init) => {
     if (init?.method === "GET") {
       return jsonResponse(sessionResponse);
@@ -228,6 +228,30 @@ function createSendFetchMock(requestLog, failureType) {
     const request = JSON.parse(String(init?.body));
     requestLog.push(request);
     const methodNames = request.methodCalls.map((methodCall) => methodCall[0]);
+    const callIds = request.methodCalls.map((methodCall) => methodCall[2]);
+
+    if (callIds.includes("cleanup-failed-outgoing-email")) {
+      return jsonResponse({
+        methodResponses: [
+          [
+            "Email/set",
+            cleanupFailureType
+              ? {
+                notDestroyed: {
+                  "sent-email-1": {
+                    type: "forbidden",
+                    description: "Cleanup rejected."
+                  }
+                }
+              }
+              : {
+                destroyed: ["sent-email-1"]
+              },
+            "cleanup-failed-outgoing-email"
+          ]
+        ]
+      });
+    }
 
     if (methodNames.includes("Identity/get")) {
       return jsonResponse({
@@ -460,37 +484,80 @@ test("creates and manually submits a JMAP email with reply metadata", async () =
     "mailboxIds/drafts~1id": null
   });
   assert.deepEqual(result, {
+    status: "sent",
+    sent: true,
+    failed: false,
+    cleanupAttempted: false,
+    cleanupSucceeded: false,
+    serverDraftMayRemain: false,
     providerMessageId: "sent-email-1",
     providerSubmissionId: "submission-1",
+    submissionId: "submission-1",
     providerThreadId: "thread-1",
     messageId: "account:yu:message:sent-email-1",
     sentAt: "2026-06-08T14:00:00.000Z"
   });
 });
 
-test("normalizes JMAP submission failures", async () => {
+test("cleans up the temporary Email when JMAP submission fails after Email creation", async () => {
+  const requestLog = [];
   const provider = new JmapProvider({
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
     baseUrl: "https://mail.example.com",
     authSecret: "Bearer token",
-    fetch: createSendFetchMock([], "submission")
+    fetch: createSendFetchMock(requestLog, "submission")
   });
 
-  await assert.rejects(
-    provider.sendMessage({
-      accountId: "account:yu",
-      from: { address: "yu@example.com" },
-      to: [{ address: "ada@example.com" }],
-      subject: "Hello",
-      bodyText: "Manual send"
-    }),
-    (error) => {
-      assert.equal(error.code, "jmap_submission_failed");
-      assert.match(error.message, /Submission rejected/u);
-      return true;
-    }
+  const result = await provider.sendMessage({
+    accountId: "account:yu",
+    from: { address: "yu@example.com" },
+    to: [{ address: "ada@example.com" }],
+    subject: "Hello",
+    bodyText: "Manual send"
+  });
+  const cleanupRequest = requestLog[2];
+
+  assert.deepEqual(
+    cleanupRequest.methodCalls.map((methodCall) => methodCall[0]),
+    ["Email/set"]
   );
+  assert.deepEqual(cleanupRequest.methodCalls[0][1].destroy, ["sent-email-1"]);
+  assert.equal(result.status, "failed");
+  assert.equal(result.sent, false);
+  assert.equal(result.failed, true);
+  assert.equal(result.cleanupAttempted, true);
+  assert.equal(result.cleanupSucceeded, true);
+  assert.equal(result.serverDraftMayRemain, false);
+  assert.equal(result.providerMessageId, "sent-email-1");
+  assert.equal(result.errorCode, "jmap_submission_failed");
+  assert.match(result.errorMessage, /Submission rejected/u);
+});
+
+test("warns when failed submission cleanup does not remove the server draft", async () => {
+  const requestLog = [];
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "Bearer token",
+    fetch: createSendFetchMock(requestLog, "submission", "cleanup")
+  });
+
+  const result = await provider.sendMessage({
+    accountId: "account:yu",
+    from: { address: "yu@example.com" },
+    to: [{ address: "ada@example.com" }],
+    subject: "Hello",
+    bodyText: "Manual send"
+  });
+
+  assert.equal(requestLog.length, 3);
+  assert.equal(result.status, "failed");
+  assert.equal(result.cleanupAttempted, true);
+  assert.equal(result.cleanupSucceeded, false);
+  assert.equal(result.serverDraftMayRemain, true);
+  assert.match(result.cleanupErrorMessage, /Cleanup rejected/u);
 });
 
 test("rejects sending when the account lacks JMAP submission support", async () => {
@@ -533,7 +600,7 @@ test("rejects sending when the account lacks JMAP submission support", async () 
   );
 });
 
-test("normalizes JMAP outgoing email creation failures", async () => {
+test("normalizes JMAP outgoing email creation failures into a send result", async () => {
   const provider = new JmapProvider({
     localAccountId: "account:yu",
     emailAddress: "yu@example.com",
@@ -542,18 +609,19 @@ test("normalizes JMAP outgoing email creation failures", async () => {
     fetch: createSendFetchMock([], "email")
   });
 
-  await assert.rejects(
-    provider.sendMessage({
-      accountId: "account:yu",
-      from: { address: "yu@example.com" },
-      to: [{ address: "ada@example.com" }],
-      subject: "Hello",
-      bodyText: "Manual send"
-    }),
-    (error) => {
-      assert.equal(error.code, "jmap_email_create_failed");
-      assert.match(error.message, /Invalid outgoing email/u);
-      return true;
-    }
-  );
+  const result = await provider.sendMessage({
+    accountId: "account:yu",
+    from: { address: "yu@example.com" },
+    to: [{ address: "ada@example.com" }],
+    subject: "Hello",
+    bodyText: "Manual send"
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.sent, false);
+  assert.equal(result.failed, true);
+  assert.equal(result.cleanupAttempted, false);
+  assert.equal(result.serverDraftMayRemain, false);
+  assert.equal(result.errorCode, "jmap_email_create_failed");
+  assert.match(result.errorMessage, /Invalid outgoing email/u);
 });

@@ -138,6 +138,26 @@ Acceptance:
   `icons/icon.ico` failure.
 - Linux package build, checks, and Rust gates remain working.
 
+## Milestone 3.5 - Compose Send Hardening
+
+Status: implemented.
+
+- JMAP submission failures after Email creation return structured failed send results.
+- Best-effort cleanup destroys only the temporary outgoing Email created for the failed
+  send.
+- UI keeps the local draft on failed send and warns if a server draft may remain.
+- Recipient parsing supports display names, quoted display names with commas, multiple
+  delimiters, and consistent To/Cc/Bcc validation.
+- Send results include sent/failed state, cleanup state, provider ids where available,
+  and user-facing error details.
+- Windows/Stalwart live smoke-test checklist is documented before AI work starts.
+
+Acceptance:
+
+- A failed JMAP submission cannot incorrectly clear the local draft.
+- Cleanup attempts and warnings are visible to the UI and tests.
+- Manual live validation steps are ready for Windows + Stalwart.
+
 ## Milestone 4 - AI Provider Layer
 
 - AI settings.

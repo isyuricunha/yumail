@@ -145,6 +145,17 @@ function createComposeFetchMock(requestLog, failSubmission = false) {
     const request = JSON.parse(String(init?.body));
     requestLog.push(request);
     const methodNames = request.methodCalls.map((methodCall) => methodCall[0]);
+    const callIds = request.methodCalls.map((methodCall) => methodCall[2]);
+
+    if (callIds.includes("cleanup-failed-outgoing-email")) {
+      return jsonResponse({
+        methodResponses: [[
+          "Email/set",
+          { destroyed: ["sent-email-1"] },
+          "cleanup-failed-outgoing-email"
+        ]]
+      });
+    }
 
     if (methodNames.includes("Identity/get")) {
       return jsonResponse({
@@ -425,7 +436,7 @@ test("loads message detail from the provider once and then uses the local cache"
 
 test("parses and validates compose recipients", () => {
   const recipients = parseRecipientInput(
-    "Ada Lovelace <ada@example.com>; team@example.com\ninvalid"
+    "\"Lovelace, Ada\" <ada@example.com>, team@example.com; Grace Hopper <grace@example.com>\ninvalid"
   );
   const validation = validateRecipients({
     to: recipients,
@@ -434,12 +445,17 @@ test("parses and validates compose recipients", () => {
   });
 
   assert.deepEqual(recipients, [
-    { name: "Ada Lovelace", address: "ada@example.com" },
+    { name: "Lovelace, Ada", address: "ada@example.com" },
     { address: "team@example.com" },
+    { name: "Grace Hopper", address: "grace@example.com" },
     { address: "invalid" }
   ]);
   assert.equal(validation.isValid, false);
   assert.deepEqual(validation.invalidAddresses, ["invalid"]);
+  assert.equal(
+    validation.message,
+    "Correct this recipient address before sending: invalid."
+  );
   assert.equal(validateRecipients({ to: [], cc: [], bcc: [] }).isValid, false);
 });
 
@@ -520,7 +536,9 @@ test("sends only on explicit service call and removes a successful draft", async
   );
   const result = await service.sendDraft(draft.id);
 
+  assert.equal(result.sent, true);
   assert.equal(result.providerSubmissionId, "submission-1");
+  assert.equal(result.submissionId, "submission-1");
   assert.equal(await service.getDraft(draft.id), undefined);
   assert.deepEqual(secretStorage.getReferences, [accountConfig.credentialReference]);
   assert.equal(requestLog.length, 2);
@@ -547,12 +565,20 @@ test("keeps a local draft when JMAP submission fails", async () => {
     bodyText: "Keep this draft"
   });
 
-  await assert.rejects(service.sendDraft(draft.id), /Submission rejected/u);
+  const result = await service.sendDraft(draft.id);
+
+  assert.equal(result.sent, false);
+  assert.equal(result.failed, true);
+  assert.equal(result.cleanupAttempted, true);
+  assert.equal(result.cleanupSucceeded, true);
+  assert.equal(result.serverDraftMayRemain, false);
+  assert.match(result.errorMessage, /Submission rejected/u);
   assert.equal((await service.getDraft(draft.id)).bodyText, "Keep this draft");
   assert.equal(
     JSON.stringify(repository.drafts).includes("Bearer secure-token"),
     false
   );
+  assert.equal(JSON.stringify(result).includes("Bearer secure-token"), false);
 });
 
 test("blocks invalid recipients before credential or provider access", async () => {
