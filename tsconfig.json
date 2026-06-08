@@ -1,0 +1,15 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/mail" },
+    { "path": "./packages/ai" },
+    { "path": "./packages/db" },
+    { "path": "./packages/core" },
+    { "path": "./packages/renderer" },
+    { "path": "./packages/search" },
+    { "path": "./packages/platform-tauri" },
+    { "path": "./packages/ui" },
+    { "path": "./apps/desktop" }
+  ]
+}

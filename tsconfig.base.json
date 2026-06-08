@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowImportingTsExtensions": false,
+    "baseUrl": ".",
+    "paths": {
+      "@yumail/ai": ["packages/ai/src/index.ts"],
+      "@yumail/core": ["packages/core/src/index.ts"],
+      "@yumail/db": ["packages/db/src/index.ts"],
+      "@yumail/mail": ["packages/mail/src/index.ts"],
+      "@yumail/platform-tauri": ["packages/platform-tauri/src/index.ts"],
+      "@yumail/renderer": ["packages/renderer/src/index.ts"],
+      "@yumail/search": ["packages/search/src/index.ts"],
+      "@yumail/shared": ["packages/shared/src/index.ts"],
+      "@yumail/ui": ["packages/ui/src/index.tsx"]
+    },
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx"
+  }
+}

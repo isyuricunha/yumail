@@ -1,0 +1,23 @@
+{
+  "name": "yumail",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.4.0",
+  "scripts": {
+    "dev": "pnpm --filter @yumail/desktop tauri:dev",
+    "build": "pnpm -r --filter './packages/**' build && pnpm --filter @yumail/desktop build",
+    "typecheck": "tsc -b",
+    "lint": "eslint .",
+    "check": "pnpm typecheck && pnpm lint && pnpm check:boundaries",
+    "check:boundaries": "node scripts/check-boundaries.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.9.2",
+    "eslint": "^10.4.1",
+    "globals": "^17.6.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.60.1"
+  }
+}
