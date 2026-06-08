@@ -17,6 +17,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@yumail/ai": "workspace:*",
     "@yumail/mail": "workspace:*",
     "@yumail/shared": "workspace:*"
   }

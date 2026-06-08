@@ -220,15 +220,27 @@ Acceptance:
 
 ## Milestone 4 - AI Provider Layer
 
-- AI settings.
-- OpenAI-compatible provider adapter.
-- Test connection.
-- Secure API key storage.
-- Prompt version registry.
+Status: implemented for provider settings and connection testing.
+
+- OpenAI-compatible provider configuration and normalized base URLs.
+- Optional model discovery through `/models` with manual model entry fallback.
+- Static one-token `/chat/completions` connection test for the selected model.
+- SQLite-backed provider metadata and generation defaults.
+- Native OS credential-manager storage for API keys.
+- Secret-free authentication, HTTP, network, JSON, and response-shape diagnostics.
+- Desktop Settings UI for provider name, base URL, authentication, API key, model,
+  temperature, max tokens, enabled state, test, and save.
 
 Acceptance:
 
 - A configured AI endpoint can be called manually without exposing secrets in ordinary DB rows.
+- No email content is sent during provider setup or connection testing.
+
+Remaining before AI actions:
+
+- Add concrete versioned prompt definitions when the first action is implemented.
+- Add custom non-secret header metadata only if a real compatible endpoint requires it.
+- Verify a live custom endpoint and Windows Credential Manager flow in the Tauri runtime.
 
 ## Milestone 5 - AI Actions
 

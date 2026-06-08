@@ -23,6 +23,9 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type {
+  AiProviderConnectionTestResult,
+  AiProviderSettingsState,
+  AiProviderSetupInput,
   JmapAccountSetupInput,
   JmapConnectionTestResult,
   MailAccountState,
@@ -86,6 +89,8 @@ const emptyMailState: MailAccountState = {
   inboxMessages: []
 };
 
+const emptyAiProviderState: AiProviderSettingsState = {};
+
 const emptyDraftEditor: DraftEditorState = {
   to: "",
   cc: "",
@@ -105,6 +110,11 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>();
   const [connectionTest, setConnectionTest] = useState<JmapConnectionTestResult>();
+  const [aiProviderState, setAiProviderState] = useState<AiProviderSettingsState>(
+    emptyAiProviderState
+  );
+  const [aiConnectionTest, setAiConnectionTest] = useState<AiProviderConnectionTestResult>();
+  const [aiStatusMessage, setAiStatusMessage] = useState<string>();
   const [drafts, setDrafts] = useState<LocalDraft[]>([]);
   const [activeDraft, setActiveDraft] = useState<LocalDraft>();
   const [draftEditor, setDraftEditor] = useState<DraftEditorState>(emptyDraftEditor);
@@ -121,13 +131,17 @@ export function App() {
   useEffect(() => {
     let isMounted = true;
 
-    void mailServices.accountService.loadState()
-      .then((loadedState) => {
+    void Promise.all([
+      mailServices.accountService.loadState(),
+      mailServices.aiProviderSettingsService.loadState()
+    ])
+      .then(([loadedState, loadedAiProviderState]) => {
         if (!isMounted) {
           return;
         }
 
         setMailState(loadedState);
+        setAiProviderState(loadedAiProviderState);
         setSelectedMessageId(loadedState.inboxMessages[0]?.id);
         if (loadedState.accountConfig) {
           return mailServices.composeService.listDrafts(
@@ -198,6 +212,19 @@ export function App() {
     }
   }
 
+  async function runAiAction(action: () => Promise<void>) {
+    setIsBusy(true);
+    setAiStatusMessage(undefined);
+
+    try {
+      await action();
+    } catch (error) {
+      setAiStatusMessage(getErrorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function handleTestConnection(input: JmapAccountSetupInput) {
     await runMailAction(async () => {
       const result = await mailServices.accountService.testJmapConnection(input);
@@ -235,6 +262,23 @@ export function App() {
       setSelectedMessageId(refreshedState.inboxMessages[0]?.id);
       resetMessageDetail();
       setStatusMessage("Inbox metadata refreshed.");
+    });
+  }
+
+  async function handleTestAiConnection(input: AiProviderSetupInput) {
+    await runAiAction(async () => {
+      const result = await mailServices.aiProviderSettingsService.testConnection(input);
+      setAiConnectionTest(result);
+      setAiStatusMessage(result.message);
+    });
+  }
+
+  async function handleSaveAiProvider(input: AiProviderSetupInput) {
+    await runAiAction(async () => {
+      const savedState = await mailServices.aiProviderSettingsService.saveProvider(input);
+      setAiProviderState(savedState);
+      setAiConnectionTest(undefined);
+      setAiStatusMessage("AI provider settings saved securely.");
     });
   }
 
@@ -599,12 +643,17 @@ export function App() {
               />
             ) : (
               <SettingsScreen
+                aiConnectionTest={aiConnectionTest}
+                aiProviderState={aiProviderState}
+                aiStatusMessage={aiStatusMessage}
                 isBusy={isBusy}
                 mailState={mailState}
                 statusMessage={statusMessage}
                 connectionTest={connectionTest}
                 onTestConnection={handleTestConnection}
                 onSaveAccount={handleSaveAccount}
+                onTestAiConnection={handleTestAiConnection}
+                onSaveAiProvider={handleSaveAiProvider}
               />
             )}
           </aside>
@@ -1122,19 +1171,29 @@ function DraftsPanel({
 }
 
 function SettingsScreen({
+  aiConnectionTest,
+  aiProviderState,
+  aiStatusMessage,
   isBusy,
   mailState,
   statusMessage,
   connectionTest,
   onTestConnection,
-  onSaveAccount
+  onSaveAccount,
+  onTestAiConnection,
+  onSaveAiProvider
 }: {
+  aiConnectionTest?: AiProviderConnectionTestResult;
+  aiProviderState: AiProviderSettingsState;
+  aiStatusMessage?: string;
   isBusy: boolean;
   mailState: MailAccountState;
   statusMessage?: string;
   connectionTest?: JmapConnectionTestResult;
   onTestConnection: (input: JmapAccountSetupInput) => Promise<void>;
   onSaveAccount: (input: JmapAccountSetupInput) => Promise<void>;
+  onTestAiConnection: (input: AiProviderSetupInput) => Promise<void>;
+  onSaveAiProvider: (input: AiProviderSetupInput) => Promise<void>;
 }) {
   const [formState, setFormState] = useState<JmapAccountSetupInput>({
     displayName: mailState.accountConfig?.account.displayName ?? "",
@@ -1188,37 +1247,240 @@ function SettingsScreen({
       <div className="panel-heading">
         <div>
           <Typography as="h2" variant="heading">Settings</Typography>
-          <Typography variant="caption" muted>Stalwart/JMAP account</Typography>
+          <Typography variant="caption" muted>Mail and AI providers</Typography>
         </div>
         <Settings size={16} aria-hidden="true" />
       </div>
 
+      <div className="settings-scroll">
+        <form className="settings-form" onSubmit={(event) => event.preventDefault()}>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>Display name</Typography>
+            <Input
+              value={formState.displayName}
+              onChange={(event) => updateFormField("displayName", event.target.value)}
+              placeholder="YuMail"
+              required
+            />
+          </label>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>Email address</Typography>
+            <Input
+              value={formState.emailAddress}
+              onChange={(event) => updateFormField("emailAddress", event.target.value)}
+              placeholder="you@example.com"
+              type="email"
+              required
+            />
+          </label>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>JMAP base URL</Typography>
+            <Input
+              value={formState.jmapBaseUrl}
+              onChange={(event) => updateFormField("jmapBaseUrl", event.target.value)}
+              placeholder="mail.example.com or https://mail.example.com/jmap/session"
+              required
+            />
+          </label>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>Authentication</Typography>
+            <select
+              className="ym-input"
+              value={formState.authMode}
+              onChange={(event) => updateFormField(
+                "authMode",
+                event.target.value as JmapAccountSetupInput["authMode"]
+              )}
+            >
+              <option value="basic">Password / Basic Auth</option>
+              <option value="bearer">Bearer token</option>
+            </select>
+          </label>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>
+              {formState.authMode === "basic" ? "Password or app password" : "Bearer token"}
+              {mailState.accountConfig ? " (leave blank to test saved credentials)" : ""}
+            </Typography>
+            <Input
+              value={formState.authSecret}
+              onChange={(event) => updateFormField("authSecret", event.target.value)}
+              placeholder={
+                formState.authMode === "basic"
+                  ? "Mailbox password or app password"
+                  : "Provider bearer token"
+              }
+              type="password"
+              required={!mailState.accountConfig}
+            />
+          </label>
+
+          <div className="settings-actions">
+            <Button
+              variant="secondary"
+              disabled={isBusy}
+              onClick={() => void submitForm("test")}
+            >
+              Test
+            </Button>
+            <Button
+              variant="primary"
+              disabled={isBusy}
+              onClick={() => void submitForm("save")}
+            >
+              Save
+            </Button>
+          </div>
+        </form>
+
+        <div className="settings-status">
+          <StatusRow
+            icon={connectionTest?.ok ? CheckCircle2 : Clock3}
+            label={statusMessage ?? "No connection test run yet"}
+            muted={!connectionTest?.ok}
+          />
+          <Typography variant="caption" muted>{DESKTOP_SECURE_STORAGE_STATUS}</Typography>
+        </div>
+
+        <DiagnosticsPanel connectionTest={connectionTest} />
+
+        <AiProviderSettingsSection
+          connectionTest={aiConnectionTest}
+          isBusy={isBusy}
+          providerState={aiProviderState}
+          statusMessage={aiStatusMessage}
+          onSave={onSaveAiProvider}
+          onTest={onTestAiConnection}
+        />
+
+        <div className="status-list">
+          <StatusRow
+            icon={mailState.accountConfig ? CheckCircle2 : Clock3}
+            label={mailState.accountConfig ? mailState.accountConfig.account.emailAddress : "No account saved"}
+            muted={!mailState.accountConfig}
+          />
+          <StatusRow
+            icon={mailState.mailboxes.length > 0 ? CheckCircle2 : Clock3}
+            label={`${mailState.mailboxes.length} mailbox${mailState.mailboxes.length === 1 ? "" : "es"} cached`}
+            muted={mailState.mailboxes.length === 0}
+          />
+          <StatusRow
+            icon={mailState.inboxMessages.length > 0 ? CheckCircle2 : Clock3}
+            label={`${mailState.inboxMessages.length} inbox message${mailState.inboxMessages.length === 1 ? "" : "s"} cached`}
+            muted={mailState.inboxMessages.length === 0}
+          />
+          <StatusRow
+            icon={aiProviderState.configuration ? CheckCircle2 : Clock3}
+            label={
+              aiProviderState.configuration
+                ? `${aiProviderState.configuration.displayName}: ${aiProviderState.configuration.model}`
+                : "No AI provider saved"
+            }
+            muted={!aiProviderState.configuration}
+          />
+        </div>
+      </div>
+    </Surface>
+  );
+}
+
+interface AiProviderFormState {
+  providerId?: string;
+  displayName: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  temperature: string;
+  maxTokens: string;
+  authMode: AiProviderSetupInput["authMode"];
+  enabled: boolean;
+}
+
+function AiProviderSettingsSection({
+  connectionTest,
+  isBusy,
+  providerState,
+  statusMessage,
+  onSave,
+  onTest
+}: {
+  connectionTest?: AiProviderConnectionTestResult;
+  isBusy: boolean;
+  providerState: AiProviderSettingsState;
+  statusMessage?: string;
+  onSave: (input: AiProviderSetupInput) => Promise<void>;
+  onTest: (input: AiProviderSetupInput) => Promise<void>;
+}) {
+  const [formState, setFormState] = useState<AiProviderFormState>(
+    createAiProviderFormState(providerState)
+  );
+
+  useEffect(() => {
+    setFormState(createAiProviderFormState(providerState));
+  }, [providerState]);
+
+  function updateFormField(
+    field: keyof AiProviderFormState,
+    value: string | boolean
+  ) {
+    setFormState((currentValue) => ({
+      ...currentValue,
+      [field]: value
+    }));
+  }
+
+  function createSetupInput(): AiProviderSetupInput {
+    return {
+      providerId: formState.providerId,
+      displayName: formState.displayName.trim(),
+      baseUrl: formState.baseUrl.trim(),
+      apiKey: formState.apiKey.trim(),
+      model: formState.model.trim(),
+      temperature: parseOptionalNumber(formState.temperature),
+      maxTokens: parseOptionalNumber(formState.maxTokens),
+      authMode: formState.authMode,
+      enabled: formState.enabled
+    };
+  }
+
+  async function submitForm(action: "test" | "save") {
+    const input = createSetupInput();
+
+    if (action === "test") {
+      await onTest(input);
+      return;
+    }
+
+    await onSave(input);
+  }
+
+  return (
+    <section className="settings-section" aria-labelledby="ai-provider-settings-heading">
+      <div className="settings-section-heading">
+        <div>
+          <Typography as="h3" variant="heading" id="ai-provider-settings-heading">
+            AI provider
+          </Typography>
+          <Typography variant="caption" muted>OpenAI-compatible endpoint</Typography>
+        </div>
+        <Sparkles size={16} aria-hidden="true" />
+      </div>
+
       <form className="settings-form" onSubmit={(event) => event.preventDefault()}>
         <label className="field-stack">
-          <Typography as="span" variant="caption" muted>Display name</Typography>
+          <Typography as="span" variant="caption" muted>Provider name</Typography>
           <Input
             value={formState.displayName}
             onChange={(event) => updateFormField("displayName", event.target.value)}
-            placeholder="YuMail"
+            placeholder="Private AI"
             required
           />
         </label>
         <label className="field-stack">
-          <Typography as="span" variant="caption" muted>Email address</Typography>
+          <Typography as="span" variant="caption" muted>Base URL</Typography>
           <Input
-            value={formState.emailAddress}
-            onChange={(event) => updateFormField("emailAddress", event.target.value)}
-            placeholder="you@example.com"
-            type="email"
-            required
-          />
-        </label>
-        <label className="field-stack">
-          <Typography as="span" variant="caption" muted>JMAP base URL</Typography>
-          <Input
-            value={formState.jmapBaseUrl}
-            onChange={(event) => updateFormField("jmapBaseUrl", event.target.value)}
-            placeholder="mail.example.com or https://mail.example.com/jmap/session"
+            value={formState.baseUrl}
+            onChange={(event) => updateFormField("baseUrl", event.target.value)}
+            placeholder="https://ai.example.com/v1"
             required
           />
         </label>
@@ -1227,24 +1489,78 @@ function SettingsScreen({
           <select
             className="ym-input"
             value={formState.authMode}
-            onChange={(event) => updateFormField("authMode", event.target.value as JmapAccountSetupInput["authMode"])}
+            onChange={(event) => updateFormField(
+              "authMode",
+              event.target.value as AiProviderSetupInput["authMode"]
+            )}
           >
-            <option value="basic">Password / Basic Auth</option>
-            <option value="bearer">Bearer token</option>
+            <option value="bearer">API key / Bearer</option>
+            <option value="none">No authentication</option>
           </select>
         </label>
         <label className="field-stack">
           <Typography as="span" variant="caption" muted>
-            {formState.authMode === "basic" ? "Password or app password" : "Bearer token"}
-            {mailState.accountConfig ? " (leave blank to test saved credentials)" : ""}
+            API key
+            {providerState.configuration ? " (leave blank to use saved key)" : ""}
           </Typography>
           <Input
-            value={formState.authSecret}
-            onChange={(event) => updateFormField("authSecret", event.target.value)}
-            placeholder={formState.authMode === "basic" ? "Mailbox password or app password" : "Provider bearer token"}
+            value={formState.apiKey}
+            onChange={(event) => updateFormField("apiKey", event.target.value)}
+            placeholder="Provider API key"
             type="password"
-            required={!mailState.accountConfig}
+            required={formState.authMode === "bearer" && !providerState.configuration}
+            disabled={formState.authMode === "none"}
           />
+        </label>
+        <label className="field-stack">
+          <Typography as="span" variant="caption" muted>Default model</Typography>
+          <Input
+            list="ai-provider-model-options"
+            value={formState.model}
+            onChange={(event) => updateFormField("model", event.target.value)}
+            placeholder="Model identifier"
+            required
+          />
+          <datalist id="ai-provider-model-options">
+            {connectionTest?.availableModels.map((model) => (
+              <option key={model} value={model} />
+            ))}
+          </datalist>
+        </label>
+        <div className="settings-number-row">
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>Temperature</Typography>
+            <Input
+              value={formState.temperature}
+              onChange={(event) => updateFormField("temperature", event.target.value)}
+              inputMode="decimal"
+              min="0"
+              max="2"
+              step="0.1"
+              type="number"
+              placeholder="0.2"
+            />
+          </label>
+          <label className="field-stack">
+            <Typography as="span" variant="caption" muted>Max tokens</Typography>
+            <Input
+              value={formState.maxTokens}
+              onChange={(event) => updateFormField("maxTokens", event.target.value)}
+              inputMode="numeric"
+              min="1"
+              step="1"
+              type="number"
+              placeholder="1024"
+            />
+          </label>
+        </div>
+        <label className="settings-toggle">
+          <input
+            checked={formState.enabled}
+            onChange={(event) => updateFormField("enabled", event.target.checked)}
+            type="checkbox"
+          />
+          <Typography as="span" variant="small">Enable this provider</Typography>
         </label>
 
         <div className="settings-actions">
@@ -1268,32 +1584,51 @@ function SettingsScreen({
       <div className="settings-status">
         <StatusRow
           icon={connectionTest?.ok ? CheckCircle2 : Clock3}
-          label={statusMessage ?? "No connection test run yet"}
+          label={statusMessage ?? "No AI connection test run yet"}
           muted={!connectionTest?.ok}
         />
         <Typography variant="caption" muted>{DESKTOP_SECURE_STORAGE_STATUS}</Typography>
       </div>
 
-      <DiagnosticsPanel connectionTest={connectionTest} />
+      <AiDiagnosticsPanel connectionTest={connectionTest} />
+    </section>
+  );
+}
 
-      <div className="status-list">
-        <StatusRow
-          icon={mailState.accountConfig ? CheckCircle2 : Clock3}
-          label={mailState.accountConfig ? mailState.accountConfig.account.emailAddress : "No account saved"}
-          muted={!mailState.accountConfig}
-        />
-        <StatusRow
-          icon={mailState.mailboxes.length > 0 ? CheckCircle2 : Clock3}
-          label={`${mailState.mailboxes.length} mailbox${mailState.mailboxes.length === 1 ? "" : "es"} cached`}
-          muted={mailState.mailboxes.length === 0}
-        />
-        <StatusRow
-          icon={mailState.inboxMessages.length > 0 ? CheckCircle2 : Clock3}
-          label={`${mailState.inboxMessages.length} inbox message${mailState.inboxMessages.length === 1 ? "" : "s"} cached`}
-          muted={mailState.inboxMessages.length === 0}
-        />
+function AiDiagnosticsPanel({
+  connectionTest
+}: {
+  connectionTest?: AiProviderConnectionTestResult;
+}) {
+  if (!connectionTest) {
+    return null;
+  }
+
+  return (
+    <div className="diagnostics-panel">
+      <Typography as="h3" variant="small">AI connection diagnostics</Typography>
+      <Typography variant="caption" muted>{connectionTest.diagnostics.message}</Typography>
+      <Typography variant="caption" muted>
+        Auth: {connectionTest.diagnostics.authMode}
+      </Typography>
+      <div className="diagnostics-list">
+        {connectionTest.diagnostics.attemptedUrls.map((attempt, index) => (
+          <div className="diagnostics-item" key={`${attempt.method}-${attempt.url}-${index}`}>
+            <Typography variant="caption">
+              {attempt.method} {attempt.httpStatus ? `${attempt.httpStatus} ` : ""}
+              {attempt.url}
+            </Typography>
+            <Typography variant="caption" muted>
+              Auth {attempt.authSent ? "sent" : "not sent"}
+              {attempt.finalUrl ? ` · Final ${attempt.finalUrl}` : ""}
+              {attempt.isJson === false ? " · Invalid JSON" : ""}
+              {attempt.responseShapeValid === false ? " · Unexpected response shape" : ""}
+              {attempt.errorCategory ? ` · ${attempt.errorCategory}` : ""}
+            </Typography>
+          </div>
+        ))}
       </div>
-    </Surface>
+    </div>
   );
 }
 
@@ -1381,6 +1716,28 @@ function formatMessageDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
+}
+
+function createAiProviderFormState(
+  providerState: AiProviderSettingsState
+): AiProviderFormState {
+  const configuration = providerState.configuration;
+
+  return {
+    providerId: configuration?.id,
+    displayName: configuration?.displayName ?? "",
+    baseUrl: configuration?.baseUrl ?? "",
+    apiKey: "",
+    model: configuration?.model ?? "",
+    temperature: configuration?.temperature?.toString() ?? "",
+    maxTokens: configuration?.maxTokens?.toString() ?? "",
+    authMode: configuration?.authMode ?? "bearer",
+    enabled: configuration?.enabled ?? true
+  };
+}
+
+function parseOptionalNumber(value: string): number | undefined {
+  return value.trim() ? Number(value) : undefined;
 }
 
 function formatFullMessageDate(value: string): string {

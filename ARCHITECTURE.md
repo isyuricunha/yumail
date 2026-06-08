@@ -68,6 +68,17 @@ React edits draft models and calls this service. It does not construct JMAP requ
 access SQLite directly. Draft creation and autosave never invoke the provider; only
 `sendDraft` can submit mail.
 
+Milestone 4 adds `AiProviderSettingsService`, which owns:
+
+- OpenAI-compatible provider configuration validation.
+- secure API-key lookup and storage by credential reference.
+- model-list and static connection-test orchestration.
+- provider metadata persistence through `AiProviderRepository`.
+- secret-free connection diagnostics.
+
+React edits settings models and calls this service. It does not construct AI HTTP
+requests, open SQLite, or access the operating system credential manager.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -125,7 +136,22 @@ display retry-safe warnings without depending on JMAP response shapes.
 
 ### `packages/ai`
 
-Owns AI provider and action contracts. AI actions are user-triggered and never send, delete, archive, move, or tag mail automatically.
+Owns AI provider and action contracts. AI actions are user-triggered and never send,
+delete, archive, move, or tag mail automatically.
+
+Milestone 4 adds `OpenAiCompatibleProvider`. It receives a fetch-compatible HTTP
+function through dependency injection and supports:
+
+- base URL normalization without rewriting custom API paths.
+- `GET {baseUrl}/models` for optional model discovery.
+- `POST {baseUrl}/chat/completions` with a static one-token prompt for connection and
+  selected-model validation.
+- Bearer API-key authentication or explicit no-auth mode.
+- normalized authentication, HTTP, network, JSON, and response-shape diagnostics.
+
+The connection test never receives email content. Diagnostics omit response bodies,
+request headers, and exception text so an endpoint cannot echo a secret into UI state or
+logs. Manual model entry remains available when `/models` is unsupported.
 
 Current action contracts:
 
@@ -152,6 +178,7 @@ Repository ports are split by responsibility:
 - `SyncStateRepository`
 - `DraftRepository`
 - `UserPreferenceRepository`
+- `AiProviderRepository`
 
 `MailMetadataRepository` composes the mail-related ports used by core services.
 `SqliteMailMetadataRepository` depends only on the small `SqlDatabase` port, so its
@@ -171,6 +198,11 @@ Milestone 3 adds `local_drafts`. Local drafts contain account and reply referenc
 recipient JSON, subject, plain-text body, and timestamps. They are local-only and are
 deleted after confirmed provider submission or explicit discard. Migration 0004 also
 adds cached `inReplyTo` and `references` metadata to messages.
+
+Milestone 4 adds migration 0007 and `SqliteAiProviderRepository`. The existing
+`ai_providers` table stores provider type, display name, normalized base URL, default
+model, generation defaults, auth mode, enabled/default flags, timestamps, and only an
+OS-credential reference. API-key values never enter SQLite.
 
 Desktop runtime persistence uses `SqliteMailMetadataRepository` through the platform
 database adapter. React components do not open SQLite directly.
@@ -243,7 +275,7 @@ depend on WebView/browser CORS policy. Redirect policy and auth forwarding remai
 
 ### Desktop Database Initialization
 
-Rust registers migrations 0001 through 0006 with the SQL plugin for
+Rust registers migrations 0001 through 0007 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 
@@ -283,7 +315,12 @@ packages/core
   -> packages/db
   -> packages/shared
 
-packages/mail, packages/ai, packages/db, packages/search
+packages/mail, packages/ai, packages/search
+  -> packages/shared
+
+packages/db
+  -> packages/mail
+  -> packages/ai
   -> packages/shared
 
 packages/renderer

@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const packageNames = ["mail", "core", "db", "renderer"];
+const packageNames = ["ai", "mail", "core", "db", "renderer"];
 const testFiles = [];
 
 for (const packageName of packageNames) {

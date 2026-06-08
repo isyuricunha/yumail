@@ -125,6 +125,20 @@
 - [x] Keep sanitized HTML and remote-image behavior unchanged.
 - [x] Test multiline and nested quoted plain-text rendering metadata.
 
+## Milestone 4 - AI Provider Settings
+
+- [x] Add normalized OpenAI-compatible provider configuration models.
+- [x] Add model discovery and a static minimal connection test.
+- [x] Support manual model entry when model discovery is unavailable.
+- [x] Persist provider metadata and only a credential reference in SQLite.
+- [x] Store API keys through the existing OS credential-manager adapter.
+- [x] Add migration 0007 and register it in the Tauri SQL startup path.
+- [x] Add provider name, base URL, API key, model, temperature, max tokens, enabled,
+  test, save, and diagnostic controls in Settings.
+- [x] Keep AI HTTP construction and secret lookup outside React.
+- [x] Add URL, request, response, persistence, secret-leak, and service-flow tests.
+- [x] Keep all email AI actions disabled and unimplemented.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
@@ -148,3 +162,6 @@
 - [ ] Decide whether provider-side draft synchronization is needed.
 - [ ] Add an optional JMAP Basic Auth username override if a server requires a username
   different from the email address.
+- [ ] Verify AI provider setup against a live OpenAI-compatible endpoint on Windows.
+- [ ] Add versioned prompt definitions with the first user-triggered AI action.
+- [ ] Add custom provider headers only when required by a verified endpoint.

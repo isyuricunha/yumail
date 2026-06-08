@@ -1,9 +1,13 @@
 import {
+  createAiProviderSettingsService,
   createComposeService,
   createMailAccountService,
   createThreadReadingService
 } from "@yumail/core";
-import { SqliteMailMetadataRepository } from "@yumail/db";
+import {
+  SqliteAiProviderRepository,
+  SqliteMailMetadataRepository
+} from "@yumail/db";
 import { createTauriPlatformAdapters } from "@yumail/platform-tauri";
 
 export const DESKTOP_SECURE_STORAGE_STATUS =
@@ -14,9 +18,17 @@ export function createDesktopMailServices() {
   const metadataRepository = new SqliteMailMetadataRepository(
     () => platformAdapters.database.openYuMailDatabase()
   );
+  const aiProviderRepository = new SqliteAiProviderRepository(
+    () => platformAdapters.database.openYuMailDatabase()
+  );
   const secretStorage = platformAdapters.secureStorage;
 
   return {
+    aiProviderSettingsService: createAiProviderSettingsService({
+      providerRepository: aiProviderRepository,
+      secretStorage,
+      fetch: platformAdapters.http.fetch
+    }),
     accountService: createMailAccountService({
       metadataRepository,
       secretStorage,

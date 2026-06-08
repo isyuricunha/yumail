@@ -222,6 +222,12 @@ fn database_migrations() -> Vec<Migration> {
             sql: include_str!("../../../../packages/db/migrations/0006_jmap_auth_mode.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 7,
+            description: "ai_provider_settings",
+            sql: include_str!("../../../../packages/db/migrations/0007_ai_provider_settings.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -237,7 +243,7 @@ mod tests {
             .map(|migration| migration.version)
             .collect::<Vec<_>>();
 
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
         assert!(migrations.iter().all(|migration| !migration.sql.is_empty()));
     }
 

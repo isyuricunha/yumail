@@ -2,11 +2,11 @@
 
 YuMail is a desktop-first, privacy-first email client based on the repository PRD.
 The current implementation supports JMAP account setup, Inbox metadata loading, and a
-cache-first safe message reading path, local drafts, replies, and manual JMAP
-submission.
+cache-first safe message reading path, local drafts, replies, manual JMAP submission,
+and secure custom OpenAI-compatible provider settings.
 
 This is not a complete mail client yet. Continuous sync, IMAP/SMTP, Gmail, Outlook,
-attachments in outgoing mail, provider-synced drafts, and live AI calls are
+attachments in outgoing mail, provider-synced drafts, and email AI actions are
 intentionally deferred.
 
 ## Requirements
@@ -105,11 +105,12 @@ packages/
 - UI primitives: `Button`, `IconButton`, `Surface`, `Typography`, `Input`, `Textarea`, `Tag`/`Chip`, and `Skeleton`.
 - JMAP-backed Inbox, safe message reading, local drafts, reply, and compose screens.
 - JMAP read/submission provider and future IMAP/SMTP provider placeholder.
-- AI provider/action interfaces for summarize, tags, action items, drafts, draft improvement, send checks, and writing-style analysis.
-- SQLite migration drafts for account metadata, message bodies, attachments, AI artifacts,
+- OpenAI-compatible AI provider settings, connection testing, and future action
+  interfaces.
+- SQLite migrations for account metadata, message bodies, attachments, AI providers and artifacts,
   sync state, and preferences.
 - Runtime SQLite repositories through the official Tauri SQL plugin.
-- Native OS credential-manager storage for JMAP secrets.
+- Native OS credential-manager storage for JMAP and AI provider secrets.
 - Boundary check that blocks Tauri imports in shared core packages and direct `invoke` calls in React source.
 
 ## Current JMAP Account Path
@@ -179,13 +180,15 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001 through 0006.
+- Rust registers migrations 0001 through 0007.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
   tags, body cache, attachments, local drafts, sync states, and preferences persist in
   SQLite.
 - JMAP account rows store auth mode and optional non-secret username metadata. Passwords
   and tokens remain only in the operating system credential manager.
+- AI provider rows store endpoint/model settings and an API-key credential reference;
+  the API key remains only in the operating system credential manager.
 
 The database lives in Tauri's app configuration directory. With the current
 `com.yumail.desktop` identifier, the expected locations are:
@@ -261,9 +264,36 @@ the local draft is retained unless the result is confirmed as sent.
 Drafts are local-only. Provider-side draft synchronization, outgoing attachments, rich
 text/HTML composition, scheduled send, and send queues are deferred.
 
+## AI Provider Settings
+
+Milestone 4 adds custom OpenAI-compatible provider configuration without enabling any
+email AI action:
+
+- Settings accepts a provider name, base URL, Bearer API key, default model,
+  temperature, max tokens, and enabled state.
+- A missing URL scheme defaults to `https://`.
+- Trailing slashes are removed while custom paths are preserved. For an endpoint that
+  exposes the conventional API below `/v1`, enter a base such as
+  `https://ai.example.com/v1`.
+- Model discovery calls `GET {baseUrl}/models`. If the endpoint does not support model
+  listing, the model field still accepts a manual identifier.
+- Connection testing calls `POST {baseUrl}/chat/completions` with the selected model,
+  a static `Reply with OK.` prompt, `temperature: 0`, and `max_tokens: 1`.
+- The connection test may incur the provider's minimum request cost, but it never sends
+  an email body, attachment, thread, draft, recipient, or account credential.
+
+The API key is written through the same native OS credential adapter used for JMAP
+secrets. SQLite stores only `api_key_reference` metadata in `ai_providers`.
+Diagnostics report attempted URLs, methods, HTTP status, auth-sent state, JSON validity,
+response-shape validity, final URL, and a safe error category. Response bodies,
+Authorization values, API keys, and raw network exception text are never included.
+
+Custom provider headers, OAuth, prompt execution, summaries, tags, action items, draft
+generation, writing-style analysis, and automatic/background AI remain deferred.
+
 ## Windows/Stalwart Smoke Test
 
-Use this checklist before starting AI integration. It does not require committing real
+Use this checklist for live desktop validation. It does not require committing real
 credentials and should be run with a disposable or self-hosted test mailbox.
 
 ### Commands

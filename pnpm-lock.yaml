@@ -105,6 +105,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@yumail/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@yumail/mail':
         specifier: workspace:*
         version: link:../mail

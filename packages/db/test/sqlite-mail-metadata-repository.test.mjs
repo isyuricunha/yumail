@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   INITIAL_SCHEMA_VERSION,
+  SqliteAiProviderRepository,
   SqliteMailMetadataRepository,
   migrations,
   requiredTables
@@ -162,8 +163,8 @@ test("registers and applies every SQLite migration", async () => {
   const database = new DatabaseSync(":memory:");
   await applyRegisteredMigrations(database);
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 6);
-  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4, 5, 6]);
+  assert.equal(INITIAL_SCHEMA_VERSION, 7);
+  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7]);
 
   const tables = database.prepare(`
     SELECT name
@@ -183,11 +184,30 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
   const databasePath = path.join(directory, "yumail.sqlite3");
   const fixture = createFixture();
   const authSecret = "Bearer must-not-enter-sqlite";
+  const aiApiKey = "AI key must-not-enter-sqlite";
+  const aiProvider = {
+    id: "ai-provider:default",
+    providerType: "openai-compatible",
+    displayName: "Private AI",
+    baseUrl: "https://ai.example.com/v1",
+    model: "utility-model",
+    temperature: 0.2,
+    maxTokens: 1024,
+    authMode: "bearer",
+    credentialReference: "credential:ai:default",
+    enabled: true,
+    isDefault: true,
+    createdAt: "2026-06-08T12:00:00.000Z",
+    updatedAt: "2026-06-08T12:00:00.000Z"
+  };
 
   try {
     const firstDatabase = new DatabaseSync(databasePath);
     await applyRegisteredMigrations(firstDatabase);
     const firstRepository = new SqliteMailMetadataRepository(
+      async () => new NodeSqlDatabase(firstDatabase)
+    );
+    const firstAiRepository = new SqliteAiProviderRepository(
       async () => new NodeSqlDatabase(firstDatabase)
     );
 
@@ -201,10 +221,14 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
     await firstRepository.saveSyncState(fixture.syncState);
     await firstRepository.saveDraft(fixture.draft);
     await firstRepository.savePreference("reading.mode", { mode: "safe-html" });
+    await firstAiRepository.saveAiProvider(aiProvider);
     firstDatabase.close();
 
     const secondDatabase = new DatabaseSync(databasePath);
     const secondRepository = new SqliteMailMetadataRepository(
+      async () => new NodeSqlDatabase(secondDatabase)
+    );
+    const secondAiRepository = new SqliteAiProviderRepository(
       async () => new NodeSqlDatabase(secondDatabase)
     );
     const [accountConfig] = await secondRepository.listAccountConfigs();
@@ -221,6 +245,7 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
       fixture.accountConfig.account.id
     );
     const preference = await secondRepository.getPreference("reading.mode");
+    const loadedAiProvider = await secondAiRepository.getDefaultAiProvider();
     const serializedMetadata = JSON.stringify({
       accountConfig,
       mailbox,
@@ -228,7 +253,8 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
       detail,
       syncState,
       draft,
-      preference
+      preference,
+      loadedAiProvider
     });
 
     assert.equal(accountConfig.credentialReference, "credential:jmap:yu");
@@ -261,7 +287,9 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
     assert.deepEqual(draft.to, [{ name: "Ada", address: "ada@example.com" }]);
     assert.equal(draft.bodyText, "Persisted local reply");
     assert.deepEqual(preference, { mode: "safe-html" });
+    assert.deepEqual(loadedAiProvider, aiProvider);
     assert.equal(serializedMetadata.includes(authSecret), false);
+    assert.equal(serializedMetadata.includes(aiApiKey), false);
 
     const bodyColumns = secondDatabase.prepare(`
       SELECT
@@ -301,6 +329,7 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
 
     const databaseContents = await readFile(databasePath);
     assert.equal(databaseContents.includes(Buffer.from(authSecret)), false);
+    assert.equal(databaseContents.includes(Buffer.from(aiApiKey)), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

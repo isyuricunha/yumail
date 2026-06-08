@@ -1,3 +1,4 @@
+import type { AiProviderConfiguration } from "@yumail/ai";
 import type {
   Account,
   JmapAuthMode,
@@ -14,7 +15,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 6;
+export const INITIAL_SCHEMA_VERSION = 7;
 
 export const migrations: Migration[] = [
   {
@@ -43,9 +44,14 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0005_jmap_session_url.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 6,
     name: "jmap_auth_mode",
     path: "packages/db/migrations/0006_jmap_auth_mode.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "ai_provider_settings",
+    path: "packages/db/migrations/0007_ai_provider_settings.sql"
   }
 ];
 
@@ -146,6 +152,12 @@ export interface UserPreferenceRepository {
   savePreference<T>(key: string, value: T): Promise<void>;
 }
 
+export interface AiProviderRepository {
+  listAiProviders(): Promise<AiProviderConfiguration[]>;
+  getDefaultAiProvider(): Promise<AiProviderConfiguration | undefined>;
+  saveAiProvider(configuration: AiProviderConfiguration): Promise<void>;
+}
+
 export interface MailMetadataRepository
   extends AccountRepository,
   MailboxRepository,
@@ -186,3 +198,4 @@ export function createEmptyMailMetadataSnapshot(): MailMetadataSnapshot {
 }
 
 export { SqliteMailMetadataRepository } from "./sqlite-mail-metadata-repository.js";
+export { SqliteAiProviderRepository } from "./sqlite-ai-provider-repository.js";

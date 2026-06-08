@@ -1,5 +1,15 @@
-import type { AiActions } from "@yumail/ai";
+import {
+  OpenAiCompatibleProvider,
+  normalizeOpenAiCompatibleBaseUrl
+} from "@yumail/ai";
 import type {
+  AiActions,
+  AiConnectionDiagnostics,
+  AiProviderAuthMode,
+  AiProviderConfiguration
+} from "@yumail/ai";
+import type {
+  AiProviderRepository,
   MailMetadataRepository,
   ProviderSyncState,
   StoredJmapAccountConfig
@@ -17,7 +27,7 @@ import type {
   SendMessageResult
 } from "@yumail/mail";
 import { JmapProvider, resolveProviderMessageId } from "@yumail/mail";
-import type { EntityId } from "@yumail/shared";
+import type { EntityId, IsoDateTime } from "@yumail/shared";
 import { YuMailError, createStableEntityId, toIsoDateTime } from "@yumail/shared";
 
 export interface YuMailServices {
@@ -85,6 +95,42 @@ export interface CreateMailAccountServiceInput {
   fetch?: typeof fetch;
 }
 
+export interface AiProviderSetupInput {
+  providerId?: EntityId;
+  displayName: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  authMode: AiProviderAuthMode;
+  enabled: boolean;
+}
+
+export interface AiProviderSettingsState {
+  configuration?: AiProviderConfiguration;
+}
+
+export interface AiProviderConnectionTestResult {
+  ok: boolean;
+  checkedAt: IsoDateTime;
+  message: string;
+  availableModels: string[];
+  diagnostics: AiConnectionDiagnostics;
+}
+
+export interface AiProviderSettingsService {
+  loadState(): Promise<AiProviderSettingsState>;
+  testConnection(input: AiProviderSetupInput): Promise<AiProviderConnectionTestResult>;
+  saveProvider(input: AiProviderSetupInput): Promise<AiProviderSettingsState>;
+}
+
+export interface CreateAiProviderSettingsServiceInput {
+  providerRepository: AiProviderRepository;
+  secretStorage: SecretStorageAdapter;
+  fetch?: typeof fetch;
+}
+
 export interface LoadMessageDetailInput extends GetMessageInput {
   forceRefresh?: boolean;
 }
@@ -147,6 +193,12 @@ export function createComposeService(
   input: CreateMailAccountServiceInput
 ): ComposeService {
   return new DefaultComposeService(input);
+}
+
+export function createAiProviderSettingsService(
+  input: CreateAiProviderSettingsServiceInput
+): AiProviderSettingsService {
+  return new DefaultAiProviderSettingsService(input);
 }
 
 export function parseRecipientInput(value: string): Recipient[] {
@@ -386,6 +438,212 @@ class DefaultComposeService implements ComposeService {
     }
 
     return draft;
+  }
+}
+
+class DefaultAiProviderSettingsService implements AiProviderSettingsService {
+  private readonly providerRepository: AiProviderRepository;
+  private readonly secretStorage: SecretStorageAdapter;
+  private readonly provider: OpenAiCompatibleProvider;
+
+  constructor(input: CreateAiProviderSettingsServiceInput) {
+    this.providerRepository = input.providerRepository;
+    this.secretStorage = input.secretStorage;
+    this.provider = new OpenAiCompatibleProvider(input.fetch);
+  }
+
+  async loadState(): Promise<AiProviderSettingsState> {
+    return {
+      configuration: await this.providerRepository.getDefaultAiProvider()
+    };
+  }
+
+  async testConnection(
+    input: AiProviderSetupInput
+  ): Promise<AiProviderConnectionTestResult> {
+    try {
+      const existingConfiguration = await this.getExistingConfiguration(input.providerId);
+      const configuration = this.createConfiguration(input, existingConfiguration);
+      const apiKey = await this.resolveApiKey(input, configuration, existingConfiguration);
+      const connectionInput = {
+        configuration,
+        apiKey
+      };
+      const [modelList, health] = await Promise.all([
+        this.provider.listModels(connectionInput),
+        this.provider.testConnection(connectionInput)
+      ]);
+      const attemptedUrls = [
+        ...modelList.diagnostics.attemptedUrls,
+        ...health.diagnostics.attemptedUrls
+      ];
+      const modelListNote = modelList.ok
+        ? ""
+        : " Model listing was unavailable; manual model entry remains supported.";
+      const message = `${health.message}${modelListNote}`;
+
+      return {
+        ok: health.ok,
+        checkedAt: health.checkedAt,
+        message,
+        availableModels: modelList.models,
+        diagnostics: {
+          attemptedUrls,
+          authMode: configuration.authMode,
+          message,
+          ...(health.diagnostics.errorCategory
+            ? { errorCategory: health.diagnostics.errorCategory }
+            : {}),
+          ...(health.diagnostics.developerDetails
+            ? { developerDetails: health.diagnostics.developerDetails }
+            : {})
+        }
+      };
+    } catch (error) {
+      const message = error instanceof YuMailError
+        ? error.message
+        : "The AI provider configuration is invalid.";
+
+      return {
+        ok: false,
+        checkedAt: toIsoDateTime(),
+        message,
+        availableModels: [],
+        diagnostics: {
+          attemptedUrls: [],
+          authMode: input.authMode,
+          message,
+          errorCategory: "configuration",
+          developerDetails: "Configuration validation failed before an HTTP request was made."
+        }
+      };
+    }
+  }
+
+  async saveProvider(input: AiProviderSetupInput): Promise<AiProviderSettingsState> {
+    const existingConfiguration = await this.getExistingConfiguration(input.providerId);
+    const configuration = this.createConfiguration(input, existingConfiguration);
+    const apiKey = await this.resolveApiKey(input, configuration, existingConfiguration);
+
+    if (configuration.authMode === "bearer") {
+      if (!apiKey) {
+        throw new YuMailError({
+          code: "missing_ai_api_key",
+          message: "Enter an API key before saving this AI provider."
+        });
+      }
+
+      await this.secretStorage.setSecret(configuration.credentialReference, apiKey);
+    }
+
+    await this.providerRepository.saveAiProvider(configuration);
+
+    return {
+      configuration
+    };
+  }
+
+  private async getExistingConfiguration(
+    providerId?: EntityId
+  ): Promise<AiProviderConfiguration | undefined> {
+    const providers = await this.providerRepository.listAiProviders();
+    return providerId
+      ? providers.find((provider) => provider.id === providerId)
+      : providers.find((provider) => provider.isDefault) ?? providers[0];
+  }
+
+  private createConfiguration(
+    input: AiProviderSetupInput,
+    existingConfiguration?: AiProviderConfiguration
+  ): AiProviderConfiguration {
+    const displayName = input.displayName.trim();
+    const model = input.model.trim();
+
+    if (!displayName) {
+      throw new YuMailError({
+        code: "invalid_ai_provider_name",
+        message: "Enter an AI provider name."
+      });
+    }
+
+    if (!model) {
+      throw new YuMailError({
+        code: "invalid_ai_model",
+        message: "Enter a default AI model."
+      });
+    }
+
+    if (
+      input.temperature !== undefined
+      && (!Number.isFinite(input.temperature) || input.temperature < 0 || input.temperature > 2)
+    ) {
+      throw new YuMailError({
+        code: "invalid_ai_temperature",
+        message: "Temperature must be between 0 and 2."
+      });
+    }
+
+    if (
+      input.maxTokens !== undefined
+      && (!Number.isInteger(input.maxTokens) || input.maxTokens < 1)
+    ) {
+      throw new YuMailError({
+        code: "invalid_ai_max_tokens",
+        message: "Max tokens must be a positive whole number."
+      });
+    }
+
+    const baseUrl = normalizeOpenAiCompatibleBaseUrl(input.baseUrl);
+    const id = existingConfiguration?.id
+      ?? input.providerId
+      ?? createStableEntityId("ai-provider", ["default-openai-compatible"]);
+    const now = toIsoDateTime();
+
+    return {
+      id,
+      providerType: "openai-compatible",
+      displayName,
+      baseUrl,
+      model,
+      temperature: input.temperature,
+      maxTokens: input.maxTokens,
+      authMode: input.authMode,
+      credentialReference: existingConfiguration?.credentialReference
+        ?? createStableEntityId("credential", ["ai", id]),
+      enabled: input.enabled,
+      isDefault: true,
+      createdAt: existingConfiguration?.createdAt ?? now,
+      updatedAt: now
+    };
+  }
+
+  private async resolveApiKey(
+    input: AiProviderSetupInput,
+    configuration: AiProviderConfiguration,
+    existingConfiguration?: AiProviderConfiguration
+  ): Promise<string | undefined> {
+    if (configuration.authMode === "none") {
+      return undefined;
+    }
+
+    const submittedApiKey = input.apiKey.trim();
+
+    if (submittedApiKey) {
+      return submittedApiKey;
+    }
+
+    const credentialReference = existingConfiguration?.credentialReference
+      ?? configuration.credentialReference;
+    const storedApiKey = await this.secretStorage.getSecret(credentialReference);
+
+    if (!storedApiKey) {
+      throw new YuMailError({
+        code: "missing_ai_api_key",
+        message: "Enter an API key before testing this AI provider."
+      });
+    }
+
+    return storedApiKey;
   }
 }
 
