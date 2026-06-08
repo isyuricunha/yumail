@@ -7,7 +7,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 2;
+export const INITIAL_SCHEMA_VERSION = 3;
 
 export const migrations: Migration[] = [
   {
@@ -16,20 +16,30 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0001_initial_schema.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 2,
     name: "message_detail_cache",
     path: "packages/db/migrations/0002_message_detail_cache.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "jmap_account_configs",
+    path: "packages/db/migrations/0003_jmap_account_configs.sql"
   }
 ];
 
 export const requiredTables = [
   "accounts",
+  "jmap_account_configs",
   "mailboxes",
   "messages",
+  "message_recipients",
   "message_bodies",
   "threads",
   "attachments",
+  "tags",
+  "message_tags",
   "ai_providers",
+  "prompt_versions",
   "ai_summaries",
   "ai_tags",
   "ai_action_items",
@@ -70,21 +80,59 @@ export interface MailMetadataSnapshot {
   syncStates: ProviderSyncState[];
 }
 
-export interface MailMetadataRepository {
-  loadSnapshot(): Promise<MailMetadataSnapshot>;
+export interface AccountRepository {
   listAccountConfigs(): Promise<StoredJmapAccountConfig[]>;
   saveAccountConfig(accountConfig: StoredJmapAccountConfig): Promise<void>;
+}
+
+export interface MailboxRepository {
   saveMailboxes(accountId: EntityId, mailboxes: Mailbox[]): Promise<void>;
   getMailboxes(accountId: EntityId): Promise<Mailbox[]>;
+}
+
+export interface MessageRepository {
   saveMessages(mailboxId: EntityId, messages: Message[]): Promise<void>;
   getMessages(mailboxId: EntityId): Promise<Message[]>;
+}
+
+export interface MessageDetailRepository {
   saveMessageDetail(messageDetail: MessageDetail): Promise<void>;
   getMessageDetail(
     accountId: EntityId,
     providerMessageId: string
   ): Promise<MessageDetail | undefined>;
+}
+
+export interface SyncStateRepository {
+  listSyncStates(): Promise<ProviderSyncState[]>;
   saveSyncState(syncState: ProviderSyncState): Promise<void>;
 }
+
+export interface UserPreferenceRepository {
+  getPreference<T>(key: string): Promise<T | undefined>;
+  savePreference<T>(key: string, value: T): Promise<void>;
+}
+
+export interface MailMetadataRepository
+  extends AccountRepository,
+  MailboxRepository,
+  MessageRepository,
+  MessageDetailRepository,
+  SyncStateRepository {
+  loadSnapshot(): Promise<MailMetadataSnapshot>;
+}
+
+export interface SqlExecutionResult {
+  rowsAffected: number;
+  lastInsertId?: number;
+}
+
+export interface SqlDatabase {
+  execute(query: string, bindValues?: unknown[]): Promise<SqlExecutionResult>;
+  select<T>(query: string, bindValues?: unknown[]): Promise<T[]>;
+}
+
+export type SqlDatabaseFactory = () => Promise<SqlDatabase>;
 
 export function createMessageDetailCacheKey(
   accountId: EntityId,
@@ -102,3 +150,5 @@ export function createEmptyMailMetadataSnapshot(): MailMetadataSnapshot {
     syncStates: []
   };
 }
+
+export { SqliteMailMetadataRepository } from "./sqlite-mail-metadata-repository.js";

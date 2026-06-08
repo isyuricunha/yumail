@@ -40,8 +40,6 @@ Acceptance:
 
 Remaining hardening:
 
-- replace the development secure-storage fallback with OS keychain or Stronghold.
-- replace desktop localStorage metadata persistence with SQLite repositories.
 - verify against a live Stalwart server and GUI Tauri runtime.
 
 ## Milestone 2 - Read And Render
@@ -64,9 +62,33 @@ Acceptance:
 Remaining hardening:
 
 - verify message detail reads against a live Stalwart server.
-- replace localStorage-backed repositories with the SQLite schema implementation.
 - add a real platform external-link opener before enabling richer link actions.
 - add provider-backed multi-message thread assembly when needed by reply workflows.
+
+## Milestone 2.5 - Desktop Storage And Credential Hardening
+
+Status: implemented.
+
+- Official Tauri SQL plugin with SQLite support.
+- Rust-registered migrations 0001-0003.
+- SQL-backed account, mailbox, message, detail, attachment, sync, and preference repositories.
+- JMAP configuration and credential-reference table.
+- Native OS credential manager integration through the secure-storage adapter.
+- Removal of runtime browser-backed metadata and secret persistence.
+- One-time deletion of legacy development browser-storage keys.
+- Persistence and migration tests against a real SQLite file.
+
+Acceptance:
+
+- Desktop mail state survives restart in SQLite.
+- SQLite contains credential references, never credential values.
+- Missing OS credential storage fails closed without a plaintext fallback.
+
+Remaining hardening:
+
+- verify SQL plugin migrations and Windows Credential Manager behavior in a packaged
+  Windows build.
+- decide whether database-at-rest encryption is required beyond OS profile protection.
 
 ## Milestone 3 - Compose And Send
 

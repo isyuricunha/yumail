@@ -199,7 +199,8 @@ class DefaultMailAccountService implements MailAccountService {
   async testJmapConnection(input: JmapAccountSetupInput): Promise<JmapConnectionTestResult> {
     try {
       const accountId = this.createAccountId(input);
-      const provider = this.createProvider(accountId, input, input.authSecret);
+      const authSecret = await this.resolveAccountSecret(accountId, input.authSecret);
+      const provider = this.createProvider(accountId, input, authSecret);
       const connectionInfo = await provider.discoverSession();
       const mailboxes = await provider.listMailboxes(accountId);
 
@@ -223,7 +224,8 @@ class DefaultMailAccountService implements MailAccountService {
     const now = toIsoDateTime();
     const accountId = this.createAccountId(input);
     const credentialReference = this.createCredentialReference(input);
-    const provider = this.createProvider(accountId, input, input.authSecret);
+    const authSecret = await this.resolveAccountSecret(accountId, input.authSecret);
+    const provider = this.createProvider(accountId, input, authSecret);
     const connectionInfo = await provider.discoverSession();
     const mailboxes = await provider.listMailboxes(accountId);
     const inboxMailbox = findInboxMailbox(mailboxes);
@@ -235,7 +237,7 @@ class DefaultMailAccountService implements MailAccountService {
       })).items
       : [];
 
-    await this.secretStorage.setSecret(credentialReference, input.authSecret);
+    await this.secretStorage.setSecret(credentialReference, authSecret);
 
     const accountConfig: StoredJmapAccountConfig = {
       account: {
@@ -369,6 +371,40 @@ class DefaultMailAccountService implements MailAccountService {
 
   private createCredentialReference(input: JmapAccountSetupInput): string {
     return createStableEntityId("credential", ["jmap", input.emailAddress, input.jmapBaseUrl]);
+  }
+
+  private async resolveAccountSecret(
+    accountId: EntityId,
+    submittedSecret: string
+  ): Promise<string> {
+    if (submittedSecret.trim()) {
+      return submittedSecret;
+    }
+
+    const accountConfigs = await this.metadataRepository.listAccountConfigs();
+    const accountConfig = accountConfigs.find(
+      (candidate) => candidate.account.id === accountId
+    );
+
+    if (!accountConfig) {
+      throw new YuMailError({
+        code: "missing_jmap_secret",
+        message: "Enter credentials before testing this JMAP account."
+      });
+    }
+
+    const storedSecret = await this.secretStorage.getSecret(
+      accountConfig.credentialReference
+    );
+
+    if (!storedSecret) {
+      throw new YuMailError({
+        code: "missing_jmap_secret",
+        message: "JMAP credentials are missing from secure storage."
+      });
+    }
+
+    return storedSecret;
   }
 
   private createSyncState(accountId: EntityId, mailboxId: EntityId, now: string): ProviderSyncState {

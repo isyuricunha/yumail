@@ -39,8 +39,10 @@ import {
   Textarea,
   Typography
 } from "@yumail/ui";
-import { DEVELOPMENT_SECURE_STORAGE_WARNING } from "./services/development-secure-storage";
-import { createDesktopMailServices } from "./services/mail-services";
+import {
+  DESKTOP_SECURE_STORAGE_STATUS,
+  createDesktopMailServices
+} from "./services/mail-services";
 
 type ActiveView = "inbox" | "thread" | "compose" | "settings";
 type MessageDetailStatus = "idle" | "loading" | "ready" | "error";
@@ -688,13 +690,16 @@ function SettingsScreen({
           />
         </label>
         <label className="field-stack">
-          <Typography as="span" variant="caption" muted>Auth token or password</Typography>
+          <Typography as="span" variant="caption" muted>
+            Auth token or password
+            {mailState.accountConfig ? " (leave blank to test saved credentials)" : ""}
+          </Typography>
           <Input
             value={formState.authSecret}
             onChange={(event) => updateFormField("authSecret", event.target.value)}
             placeholder="Bearer token, Basic header, password:secret, or user:password"
             type="password"
-            required
+            required={!mailState.accountConfig}
           />
         </label>
 
@@ -722,7 +727,7 @@ function SettingsScreen({
           label={statusMessage ?? "No connection test run yet"}
           muted={!connectionTest?.ok}
         />
-        <Typography variant="caption" muted>{DEVELOPMENT_SECURE_STORAGE_WARNING}</Typography>
+        <Typography variant="caption" muted>{DESKTOP_SECURE_STORAGE_STATUS}</Typography>
       </div>
 
       <div className="status-list">

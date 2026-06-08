@@ -13,6 +13,10 @@ sending, and live AI calls are intentionally deferred.
 - pnpm 11+
 - Rust and Cargo
 - Tauri desktop prerequisites for your OS
+- An available operating system credential manager
+
+On Linux, the secure-storage adapter requires a working Secret Service provider such as
+GNOME Keyring or a compatible KeePassXC setup.
 
 ## Install
 
@@ -31,6 +35,9 @@ This runs `tauri dev` for `apps/desktop`. For the frontend-only Vite shell:
 ```bash
 pnpm --filter @yumail/desktop dev
 ```
+
+The frontend-only shell cannot access SQLite or secure credentials. Use `pnpm dev` for
+account setup, persistence, inbox refresh, and message reading.
 
 ## Checks
 
@@ -72,6 +79,8 @@ packages/
 - AI provider/action interfaces for summarize, tags, action items, drafts, draft improvement, send checks, and writing-style analysis.
 - SQLite migration drafts for account metadata, message bodies, attachments, AI artifacts,
   sync state, and preferences.
+- Runtime SQLite repositories through the official Tauri SQL plugin.
+- Native OS credential-manager storage for JMAP secrets.
 - Boundary check that blocks Tauri imports in shared core packages and direct `invoke` calls in React source.
 
 ## Current JMAP Account Path
@@ -84,7 +93,9 @@ Milestone 1 adds a first read-only JMAP path:
 - JMAP message metadata is normalized into YuMail `Message` objects.
 - Account, mailbox, message, and sync metadata persist locally through a repository interface.
 
-Secrets are not stored in ordinary SQLite rows. Full OS keychain/Stronghold storage is still pending; until then the desktop app uses the platform secure-storage abstraction first and falls back to an explicit development-only localStorage adapter with an in-app warning.
+Secrets are not stored in SQLite rows or ordinary browser storage. Account records keep
+only a credential reference. The Tauri secure-storage adapter resolves that reference
+through Windows Credential Manager, macOS Keychain, or Linux Secret Service.
 
 ## Current Message Reading Path
 
@@ -99,8 +110,33 @@ Milestone 2 adds safe Inbox message reading:
 - Attachment filename, content type, and available size are displayed.
 
 Raw HTML is cached so it can be re-sanitized under current renderer policy. It is never
-rendered directly. The current desktop repository remains localStorage-backed; the
-SQLite `message_bodies` migration defines the intended persistent body cache shape.
+rendered directly.
+
+## Desktop Persistence
+
+Milestone 2.5 makes SQLite the desktop runtime source of truth:
+
+- `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
+- Rust registers migrations 0001, 0002, and 0003.
+- Pending migrations run when the database is first opened during app startup.
+- Account metadata, JMAP configuration references, mailboxes, messages, recipients,
+  tags, body cache, attachments, sync states, and preferences persist in SQLite.
+
+The database lives in Tauri's app configuration directory. With the current
+`com.yumail.desktop` identifier, the expected locations are:
+
+- Windows: `%APPDATA%\com.yumail.desktop\yumail.sqlite3`
+- Linux: `$XDG_CONFIG_HOME/com.yumail.desktop/yumail.sqlite3`
+- macOS: `~/Library/Application Support/com.yumail.desktop/yumail.sqlite3`
+
+Stronghold was not added because it requires a vault-password lifecycle. Using a
+hardcoded password or storing it beside the vault would not improve security. YuMail
+instead uses the operating system credential manager and fails closed if it is
+unavailable.
+
+The app performs deletion-only cleanup of the legacy
+`yumail.development-secrets.v1` and `yumail.mail-metadata.v1` browser-storage keys.
+There is no browser-storage persistence fallback.
 
 ## Important Guardrails
 

@@ -175,12 +175,18 @@ class MemoryRepository {
       ...this.snapshot.syncStates.filter((candidate) => candidate.id !== syncState.id)
     ];
   }
+
+  async listSyncStates() {
+    return this.snapshot.syncStates;
+  }
 }
 
 class MemorySecretStorage {
   secrets = {};
+  getReferences = [];
 
   async getSecret(reference) {
+    this.getReferences.push(reference);
     return this.secrets[reference] ?? null;
   }
 
@@ -215,6 +221,56 @@ test("saves JMAP account metadata and keeps the secret out of metadata storage",
   assert.equal(state.inboxMessages[0].subject, "Persist me");
   assert.equal(serializedMetadata.includes("super-secret"), false);
   assert.equal(Object.values(secretStorage.secrets).includes("Bearer super-secret"), true);
+});
+
+test("reloads saved JMAP credentials by reference through secure storage", async () => {
+  const repository = new MemoryRepository();
+  const secretStorage = new MemorySecretStorage();
+  const service = createMailAccountService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createFetchMock()
+  });
+  const savedState = await service.saveJmapAccount({
+    displayName: "Yu",
+    emailAddress: "yu@example.com",
+    jmapBaseUrl: "https://mail.example.com",
+    authSecret: "Bearer super-secret"
+  });
+
+  await service.refreshInbox(savedState.accountConfig.account.id);
+
+  assert.deepEqual(secretStorage.getReferences, [
+    savedState.accountConfig.credentialReference
+  ]);
+});
+
+test("tests a saved JMAP account using its secure-storage reference", async () => {
+  const repository = new MemoryRepository();
+  const secretStorage = new MemorySecretStorage();
+  const service = createMailAccountService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createFetchMock()
+  });
+  const savedState = await service.saveJmapAccount({
+    displayName: "Yu",
+    emailAddress: "yu@example.com",
+    jmapBaseUrl: "https://mail.example.com",
+    authSecret: "Bearer super-secret"
+  });
+
+  const result = await service.testJmapConnection({
+    displayName: "Yu",
+    emailAddress: "yu@example.com",
+    jmapBaseUrl: "https://mail.example.com",
+    authSecret: ""
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(secretStorage.getReferences, [
+    savedState.accountConfig.credentialReference
+  ]);
 });
 
 test("loads message detail from the provider once and then uses the local cache", async () => {

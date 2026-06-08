@@ -52,6 +52,10 @@ Milestone 2 adds `ThreadReadingService`, which coordinates:
 - provider detail fetches through `MailProvider`.
 - local message detail cache updates.
 
+Milestone 2.5 replaces browser-backed persistence without changing these service
+contracts. Core still receives repository and secret-storage ports through dependency
+injection.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -83,16 +87,33 @@ Current action contracts:
 
 ### `packages/db`
 
-Owns SQLite schema and repository contracts. The schema stores provider metadata,
-message cache data, AI artifacts, sync state, and preferences.
+Owns SQLite schema, repository contracts, and the Tauri-independent SQL repository
+implementation. The schema stores provider metadata, message cache data, AI artifacts,
+sync state, and preferences.
+
+Repository ports are split by responsibility:
+
+- `AccountRepository`
+- `MailboxRepository`
+- `MessageRepository`
+- `MessageDetailRepository`
+- `SyncStateRepository`
+- `UserPreferenceRepository`
+
+`MailMetadataRepository` composes the mail-related ports used by core services.
+`SqliteMailMetadataRepository` depends only on the small `SqlDatabase` port, so its
+mapping logic is testable with Node SQLite and does not import Tauri.
 
 Milestone 2 adds a one-to-one `message_bodies` cache keyed by `message_id` with a unique
 `account_id` and `provider_message_id` pair. Plain and raw HTML bodies are stored once.
 Body-part structure is stored as metadata JSON without duplicating body payloads.
 
-Secrets are not stored directly. Tables use references such as `provider_config_reference` and `api_key_reference`.
+Milestone 2.5 adds `jmap_account_configs` for JMAP URLs, discovered provider IDs, and
+credential references. Secret values are never stored in this table or any other SQLite
+table.
 
-The first desktop repository implementation is local metadata persistence in `apps/desktop` behind the `MailMetadataRepository` contract. Replacing it with SQLite repositories should not affect React feature components.
+Desktop runtime persistence uses `SqliteMailMetadataRepository` through the platform
+database adapter. React components do not open SQLite directly.
 
 ### `packages/renderer`
 
@@ -125,6 +146,7 @@ Owns small shared types, constants, and errors that are safe across desktop and 
 Owns Tauri-specific TypeScript adapters:
 
 - secure storage
+- SQLite database
 - filesystem
 - notifications
 - opener
@@ -132,7 +154,30 @@ Owns Tauri-specific TypeScript adapters:
 
 This is the only package allowed to import `@tauri-apps/*`.
 
-Desktop credential storage currently tries the platform secure-storage adapter and falls back to a warning-heavy development localStorage adapter until an OS keychain or Stronghold adapter is configured.
+The database adapter wraps `@tauri-apps/plugin-sql` and opens
+`sqlite:yumail.sqlite3`. The SQL plugin stores the file below Tauri's app configuration
+directory.
+
+Desktop secure-storage commands use the Rust `keyring` crate:
+
+- Windows Credential Manager
+- macOS Keychain
+- Linux Secret Service with persistent keyring support
+
+There is no localStorage or plaintext-file fallback. If the operating system credential
+store is unavailable, account save/refresh fails with a clear error. Stronghold is not
+used because YuMail does not yet have a safe user-managed vault-password lifecycle;
+hardcoding or storing that password beside the vault would weaken the design.
+
+At startup, the desktop removes the two known legacy development localStorage keys.
+This cleanup never reads or persists browser-storage values and is not a persistence
+path.
+
+### Desktop Database Initialization
+
+Rust registers migrations 0001, 0002, and 0003 with the SQL plugin for
+`sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
+is first loaded during service startup.
 
 ## Enforced Rules
 
@@ -146,6 +191,9 @@ The boundary script fails if:
 
 - `packages/core`, `packages/mail`, `packages/ai`, `packages/db`, `packages/renderer`, `packages/search`, or `packages/shared` import Tauri-specific APIs.
 - React source in `apps/desktop/src` or `packages/ui/src` calls Tauri `invoke` directly.
+- React source imports the SQL or Stronghold plugins directly.
+- production desktop code reads or persists values through localStorage/sessionStorage;
+  the deletion-only legacy cleanup is explicitly allowlisted.
 
 ## Dependency Direction
 
@@ -169,6 +217,11 @@ packages/renderer
 
 packages/platform-tauri
   -> @tauri-apps/api
+  -> @tauri-apps/plugin-sql
+
+apps/desktop/src-tauri
+  -> tauri-plugin-sql
+  -> OS credential manager through keyring
 ```
 
 Provider implementations must remain behind `MailProvider`. AI request implementations must remain behind `AiProvider` and `AiActions`.

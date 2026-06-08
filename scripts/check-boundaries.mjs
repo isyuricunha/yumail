@@ -89,10 +89,34 @@ async function checkReactInvokeUsage() {
 
       if (
         contents.includes("@tauri-apps/api/core") ||
+        contents.includes("@tauri-apps/plugin-sql") ||
+        contents.includes("@tauri-apps/plugin-stronghold") ||
         /\binvoke\s*\(/u.test(contents)
       ) {
-        violations.push(`${file}: React source must not call Tauri invoke directly`);
+        violations.push(`${file}: React source must not access Tauri persistence directly`);
       }
+    }
+  }
+
+  return violations;
+}
+
+async function checkProductionLocalStorageUsage() {
+  const violations = [];
+  const allowedCleanupFile = "apps/desktop/src/services/legacy-browser-storage-cleanup.ts";
+
+  for (const file of await collectFiles("apps/desktop/src")) {
+    const contents = await readFile(path.join(root, file), "utf8");
+
+    if (
+      /\b(?:localStorage|sessionStorage)\b/u.test(contents) &&
+      file !== allowedCleanupFile
+    ) {
+      violations.push(`${file}: production desktop persistence must not use browser storage`);
+    }
+
+    if (/\b(?:localStorage|sessionStorage)\.(?:getItem|setItem)\b/u.test(contents)) {
+      violations.push(`${file}: production desktop code must not read or write browser storage`);
     }
   }
 
@@ -101,7 +125,8 @@ async function checkReactInvokeUsage() {
 
 const violations = [
   ...await checkTauriImports(),
-  ...await checkReactInvokeUsage()
+  ...await checkReactInvokeUsage(),
+  ...await checkProductionLocalStorageUsage()
 ];
 
 if (violations.length > 0) {

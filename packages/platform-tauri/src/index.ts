@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import Database from "@tauri-apps/plugin-sql";
 
 export interface SecureStorageAdapter {
   getSecret(reference: string): Promise<string | null>;
@@ -31,8 +32,23 @@ export interface AppStorageAdapter {
   getDatabasePath(): Promise<string>;
 }
 
+export interface SqlExecutionResult {
+  rowsAffected: number;
+  lastInsertId?: number;
+}
+
+export interface SqlDatabaseAdapter {
+  execute(query: string, bindValues?: unknown[]): Promise<SqlExecutionResult>;
+  select<T>(query: string, bindValues?: unknown[]): Promise<T[]>;
+}
+
+export interface DatabaseAdapter {
+  openYuMailDatabase(): Promise<SqlDatabaseAdapter>;
+}
+
 export interface TauriPlatformAdapters {
   secureStorage: SecureStorageAdapter;
+  database: DatabaseAdapter;
   filesystem: FileSystemAdapter;
   notifications: NotificationAdapter;
   opener: OpenerAdapter;
@@ -45,6 +61,18 @@ export function createTauriPlatformAdapters(): TauriPlatformAdapters {
       getSecret: (reference) => invoke<string | null>("secure_storage_get", { reference }),
       setSecret: (reference, value) => invoke<void>("secure_storage_set", { reference, value }),
       deleteSecret: (reference) => invoke<void>("secure_storage_delete", { reference })
+    },
+    database: {
+      async openYuMailDatabase() {
+        const database = await Database.load("sqlite:yumail.sqlite3");
+
+        return {
+          execute: (query, bindValues) => database.execute(query, bindValues),
+          select: <T>(query: string, bindValues?: unknown[]) => (
+            database.select<T[]>(query, bindValues)
+          )
+        };
+      }
     },
     filesystem: {
       readTextFile: (path) => invoke<string>("filesystem_read_text_file", { path }),

@@ -38,13 +38,29 @@
 - [x] Add desktop loading, error, empty, body, recipient, and attachment states.
 - [x] Test JMAP detail normalization, cache behavior, sanitization, and image blocking.
 
+## Milestone 2.5 - Desktop Storage And Credential Hardening
+
+- [x] Add the official Tauri SQL plugin with SQLite support.
+- [x] Register and apply migrations 0001-0003 through the desktop runtime.
+- [x] Add focused account, mailbox, message, detail, sync, and preference repositories.
+- [x] Persist JMAP configuration and credential references without secret values.
+- [x] Replace runtime metadata localStorage with SQLite.
+- [x] Replace secret localStorage fallback with native OS credential storage.
+- [x] Remove known legacy development browser-storage keys at startup.
+- [x] Keep React and shared packages independent of SQL and credential plugins.
+- [x] Test migration application and SQLite persistence across database reopen.
+- [x] Test secure-storage reference use for saved connection checks and refresh.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
-- [ ] Decide whether Drizzle is needed when repositories are implemented.
-- [ ] Replace development credential storage with OS keychain or Tauri Stronghold.
-- [ ] Replace desktop localStorage metadata persistence with SQLite repositories.
+- [x] Decide whether Drizzle is needed when repositories are implemented: not currently;
+  explicit SQL keeps the schema and provider mapping visible.
+- [x] Replace development credential storage with native OS credential storage.
+- [x] Replace desktop localStorage metadata persistence with SQLite repositories.
 - [ ] Verify `pnpm dev` opens a Tauri window on a Windows or Linux GUI environment.
+- [ ] Verify packaged Windows persistence and Credential Manager behavior.
+- [ ] Decide whether SQLite database-at-rest encryption is needed.
 - [ ] Verify JMAP account setup against a live Stalwart server.
 - [ ] Verify JMAP body detail fixtures against a live Stalwart server.
 - [ ] Add a real platform external-link opener before richer link actions.
