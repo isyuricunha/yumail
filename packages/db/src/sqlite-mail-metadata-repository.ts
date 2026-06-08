@@ -1,5 +1,7 @@
 import type {
   Attachment,
+  DraftMode,
+  LocalDraft,
   Mailbox,
   MailboxRole,
   Message,
@@ -55,6 +57,8 @@ interface MessageRow {
   provider_thread_id: string | null;
   mailbox_id: string;
   message_id_header: string | null;
+  in_reply_to_json: string;
+  references_json: string;
   subject: string;
   from_name: string | null;
   from_address: string;
@@ -117,6 +121,25 @@ interface PreferenceRow {
   value_json: string;
 }
 
+interface LocalDraftRow {
+  id: string;
+  account_id: string;
+  mode: string;
+  related_message_id: string | null;
+  related_provider_message_id: string | null;
+  related_provider_thread_id: string | null;
+  related_message_id_header: string | null;
+  references_json: string;
+  to_json: string;
+  cc_json: string;
+  bcc_json: string;
+  subject: string;
+  body_format: string;
+  body_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
 const ACCOUNT_CONFIG_SELECT = `
   SELECT
     accounts.id,
@@ -146,6 +169,8 @@ const MESSAGE_SELECT = `
     provider_thread_id,
     mailbox_id,
     message_id_header,
+    in_reply_to_json,
+    references_json,
     subject,
     from_name,
     from_address,
@@ -564,6 +589,124 @@ implements MailMetadataRepository, UserPreferenceRepository {
     ]);
   }
 
+  async listDrafts(accountId: EntityId): Promise<LocalDraft[]> {
+    const database = await this.getDatabase();
+    const rows = await database.select<LocalDraftRow>(`
+      SELECT
+        id,
+        account_id,
+        mode,
+        related_message_id,
+        related_provider_message_id,
+        related_provider_thread_id,
+        related_message_id_header,
+        references_json,
+        to_json,
+        cc_json,
+        bcc_json,
+        subject,
+        body_format,
+        body_text,
+        created_at,
+        updated_at
+      FROM local_drafts
+      WHERE account_id = ?
+      ORDER BY updated_at DESC
+    `, [accountId]);
+
+    return rows.map(mapLocalDraft);
+  }
+
+  async getDraft(draftId: EntityId): Promise<LocalDraft | undefined> {
+    const database = await this.getDatabase();
+    const [row] = await database.select<LocalDraftRow>(`
+      SELECT
+        id,
+        account_id,
+        mode,
+        related_message_id,
+        related_provider_message_id,
+        related_provider_thread_id,
+        related_message_id_header,
+        references_json,
+        to_json,
+        cc_json,
+        bcc_json,
+        subject,
+        body_format,
+        body_text,
+        created_at,
+        updated_at
+      FROM local_drafts
+      WHERE id = ?
+      LIMIT 1
+    `, [draftId]);
+
+    return row ? mapLocalDraft(row) : undefined;
+  }
+
+  async saveDraft(draft: LocalDraft): Promise<void> {
+    const database = await this.getDatabase();
+
+    await database.execute(`
+      INSERT INTO local_drafts (
+        id,
+        account_id,
+        mode,
+        related_message_id,
+        related_provider_message_id,
+        related_provider_thread_id,
+        related_message_id_header,
+        references_json,
+        to_json,
+        cc_json,
+        bcc_json,
+        subject,
+        body_format,
+        body_text,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        account_id = excluded.account_id,
+        mode = excluded.mode,
+        related_message_id = excluded.related_message_id,
+        related_provider_message_id = excluded.related_provider_message_id,
+        related_provider_thread_id = excluded.related_provider_thread_id,
+        related_message_id_header = excluded.related_message_id_header,
+        references_json = excluded.references_json,
+        to_json = excluded.to_json,
+        cc_json = excluded.cc_json,
+        bcc_json = excluded.bcc_json,
+        subject = excluded.subject,
+        body_format = excluded.body_format,
+        body_text = excluded.body_text,
+        updated_at = excluded.updated_at
+    `, [
+      draft.id,
+      draft.accountId,
+      draft.mode,
+      draft.relatedMessageId ?? null,
+      draft.relatedProviderMessageId ?? null,
+      draft.relatedProviderThreadId ?? null,
+      draft.relatedMessageIdHeader ?? null,
+      JSON.stringify(draft.references),
+      JSON.stringify(draft.to),
+      JSON.stringify(draft.cc),
+      JSON.stringify(draft.bcc),
+      draft.subject,
+      draft.bodyFormat,
+      draft.bodyText,
+      draft.createdAt,
+      draft.updatedAt
+    ]);
+  }
+
+  async deleteDraft(draftId: EntityId): Promise<void> {
+    const database = await this.getDatabase();
+    await database.execute("DELETE FROM local_drafts WHERE id = ?", [draftId]);
+  }
+
   async getPreference<T>(key: string): Promise<T | undefined> {
     const database = await this.getDatabase();
     const [row] = await database.select<PreferenceRow>(`
@@ -616,6 +759,8 @@ implements MailMetadataRepository, UserPreferenceRepository {
         provider_thread_id,
         mailbox_id,
         message_id_header,
+        in_reply_to_json,
+        references_json,
         subject,
         from_name,
         from_address,
@@ -628,7 +773,7 @@ implements MailMetadataRepository, UserPreferenceRepository {
         has_attachments,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         account_id = excluded.account_id,
         provider_type = excluded.provider_type,
@@ -636,6 +781,8 @@ implements MailMetadataRepository, UserPreferenceRepository {
         provider_thread_id = excluded.provider_thread_id,
         mailbox_id = excluded.mailbox_id,
         message_id_header = excluded.message_id_header,
+        in_reply_to_json = excluded.in_reply_to_json,
+        references_json = excluded.references_json,
         subject = excluded.subject,
         from_name = excluded.from_name,
         from_address = excluded.from_address,
@@ -655,6 +802,8 @@ implements MailMetadataRepository, UserPreferenceRepository {
       message.providerThreadId ?? null,
       message.mailboxId,
       message.messageIdHeader ?? null,
+      JSON.stringify(message.inReplyToMessageIds ?? []),
+      JSON.stringify(message.references ?? []),
       message.subject,
       message.from.name ?? null,
       message.from.address,
@@ -677,13 +826,18 @@ implements MailMetadataRepository, UserPreferenceRepository {
     );
 
     const recipients: Array<{
-      type: "to" | "cc" | "bcc";
+      type: "to" | "cc" | "bcc" | "reply-to";
       recipient: Recipient;
       index: number;
     }> = [
       ...message.to.map((recipient, index) => ({ type: "to" as const, recipient, index })),
       ...message.cc.map((recipient, index) => ({ type: "cc" as const, recipient, index })),
-      ...message.bcc.map((recipient, index) => ({ type: "bcc" as const, recipient, index }))
+      ...message.bcc.map((recipient, index) => ({ type: "bcc" as const, recipient, index })),
+      ...(message.replyTo ?? []).map((recipient, index) => ({
+        type: "reply-to" as const,
+        recipient,
+        index
+      }))
     ];
 
     for (const { type, recipient, index } of recipients) {
@@ -781,6 +935,8 @@ implements MailMetadataRepository, UserPreferenceRepository {
       providerThreadId: row.provider_thread_id ?? undefined,
       mailboxId: row.mailbox_id,
       messageIdHeader: row.message_id_header ?? undefined,
+      inReplyToMessageIds: parseJsonArray<string>(row.in_reply_to_json),
+      references: parseJsonArray<string>(row.references_json),
       subject: row.subject,
       from: {
         name: row.from_name ?? undefined,
@@ -789,6 +945,7 @@ implements MailMetadataRepository, UserPreferenceRepository {
       to: mapRecipients(recipients, "to"),
       cc: mapRecipients(recipients, "cc"),
       bcc: mapRecipients(recipients, "bcc"),
+      replyTo: mapRecipients(recipients, "reply-to"),
       date: row.date,
       receivedAt: row.received_at ?? undefined,
       snippet: row.snippet,
@@ -846,7 +1003,7 @@ function mapMailbox(row: MailboxRow): Mailbox {
 
 function mapRecipients(
   rows: RecipientRow[],
-  type: "to" | "cc" | "bcc"
+  type: "to" | "cc" | "bcc" | "reply-to"
 ): Recipient[] {
   return rows
     .filter((row) => row.recipient_type === type)
@@ -854,6 +1011,27 @@ function mapRecipients(
       name: row.name ?? undefined,
       address: row.address
     }));
+}
+
+function mapLocalDraft(row: LocalDraftRow): LocalDraft {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    mode: row.mode as DraftMode,
+    relatedMessageId: row.related_message_id ?? undefined,
+    relatedProviderMessageId: row.related_provider_message_id ?? undefined,
+    relatedProviderThreadId: row.related_provider_thread_id ?? undefined,
+    relatedMessageIdHeader: row.related_message_id_header ?? undefined,
+    references: parseJsonArray<string>(row.references_json),
+    to: parseJsonArray<Recipient>(row.to_json),
+    cc: parseJsonArray<Recipient>(row.cc_json),
+    bcc: parseJsonArray<Recipient>(row.bcc_json),
+    subject: row.subject,
+    bodyFormat: row.body_format as "plain-text",
+    bodyText: row.body_text,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function mapAttachment(row: AttachmentRow): Attachment {

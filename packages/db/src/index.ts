@@ -1,4 +1,10 @@
-import type { Account, Mailbox, Message, MessageDetail } from "@yumail/mail";
+import type {
+  Account,
+  LocalDraft,
+  Mailbox,
+  Message,
+  MessageDetail
+} from "@yumail/mail";
 import type { EntityId, IsoDateTime, ProviderType } from "@yumail/shared";
 
 export interface Migration {
@@ -7,7 +13,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 3;
+export const INITIAL_SCHEMA_VERSION = 4;
 
 export const migrations: Migration[] = [
   {
@@ -21,9 +27,14 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0002_message_detail_cache.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 3,
     name: "jmap_account_configs",
     path: "packages/db/migrations/0003_jmap_account_configs.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "local_drafts",
+    path: "packages/db/migrations/0004_local_drafts.sql"
   }
 ];
 
@@ -34,6 +45,7 @@ export const requiredTables = [
   "messages",
   "message_recipients",
   "message_bodies",
+  "local_drafts",
   "threads",
   "attachments",
   "tags",
@@ -108,6 +120,13 @@ export interface SyncStateRepository {
   saveSyncState(syncState: ProviderSyncState): Promise<void>;
 }
 
+export interface DraftRepository {
+  listDrafts(accountId: EntityId): Promise<LocalDraft[]>;
+  getDraft(draftId: EntityId): Promise<LocalDraft | undefined>;
+  saveDraft(draft: LocalDraft): Promise<void>;
+  deleteDraft(draftId: EntityId): Promise<void>;
+}
+
 export interface UserPreferenceRepository {
   getPreference<T>(key: string): Promise<T | undefined>;
   savePreference<T>(key: string, value: T): Promise<void>;
@@ -118,7 +137,8 @@ export interface MailMetadataRepository
   MailboxRepository,
   MessageRepository,
   MessageDetailRepository,
-  SyncStateRepository {
+  SyncStateRepository,
+  DraftRepository {
   loadSnapshot(): Promise<MailMetadataSnapshot>;
 }
 

@@ -6,10 +6,13 @@ import type {
 } from "@yumail/db";
 import type {
   GetMessageInput,
+  LocalDraft,
   Mailbox,
   Message,
   MessageDetail,
-  MailProvider
+  MailProvider,
+  Recipient,
+  SendMessageResult
 } from "@yumail/mail";
 import { JmapProvider, resolveProviderMessageId } from "@yumail/mail";
 import type { EntityId } from "@yumail/shared";
@@ -90,6 +93,40 @@ export interface ThreadReadingService {
   loadMessageDetail(input: LoadMessageDetailInput): Promise<LoadMessageDetailResult>;
 }
 
+export interface CreateDraftInput {
+  accountId: EntityId;
+}
+
+export interface CreateReplyDraftInput {
+  accountId: EntityId;
+  providerMessageId: string;
+}
+
+export interface UpdateDraftInput {
+  draftId: EntityId;
+  to: Recipient[];
+  cc: Recipient[];
+  bcc: Recipient[];
+  subject: string;
+  bodyText: string;
+}
+
+export interface RecipientValidationResult {
+  isValid: boolean;
+  invalidAddresses: string[];
+  recipientCount: number;
+}
+
+export interface ComposeService {
+  listDrafts(accountId: EntityId): Promise<LocalDraft[]>;
+  getDraft(draftId: EntityId): Promise<LocalDraft | undefined>;
+  createDraft(input: CreateDraftInput): Promise<LocalDraft>;
+  createReplyDraft(input: CreateReplyDraftInput): Promise<LocalDraft>;
+  updateDraft(input: UpdateDraftInput): Promise<LocalDraft>;
+  discardDraft(draftId: EntityId): Promise<void>;
+  sendDraft(draftId: EntityId): Promise<SendMessageResult>;
+}
+
 export function createMailAccountService(input: CreateMailAccountServiceInput): MailAccountService {
   return new DefaultMailAccountService(input);
 }
@@ -98,6 +135,252 @@ export function createThreadReadingService(
   input: CreateMailAccountServiceInput
 ): ThreadReadingService {
   return new DefaultThreadReadingService(input);
+}
+
+export function createComposeService(
+  input: CreateMailAccountServiceInput
+): ComposeService {
+  return new DefaultComposeService(input);
+}
+
+export function parseRecipientInput(value: string): Recipient[] {
+  return value
+    .split(/[,;\n]+/u)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const addressMatch = entry.match(/^(.*?)<([^<>]+)>$/u);
+
+      if (!addressMatch) {
+        return { address: entry };
+      }
+
+      const name = addressMatch[1]?.trim().replace(/^["']|["']$/gu, "");
+      return {
+        ...(name ? { name } : {}),
+        address: addressMatch[2]?.trim() ?? ""
+      };
+    });
+}
+
+export function validateRecipients(
+  recipientGroups: Pick<LocalDraft, "to" | "cc" | "bcc">
+): RecipientValidationResult {
+  const recipients = [
+    ...recipientGroups.to,
+    ...recipientGroups.cc,
+    ...recipientGroups.bcc
+  ];
+  const invalidAddresses = recipients
+    .map((recipient) => recipient.address.trim())
+    .filter((address) => !isValidEmailAddress(address));
+
+  return {
+    isValid: recipients.length > 0 && invalidAddresses.length === 0,
+    invalidAddresses,
+    recipientCount: recipients.length
+  };
+}
+
+class DefaultComposeService implements ComposeService {
+  private readonly metadataRepository: MailMetadataRepository;
+  private readonly secretStorage: SecretStorageAdapter;
+  private readonly fetchImpl?: typeof fetch;
+
+  constructor(input: CreateMailAccountServiceInput) {
+    this.metadataRepository = input.metadataRepository;
+    this.secretStorage = input.secretStorage;
+    this.fetchImpl = input.fetch;
+  }
+
+  listDrafts(accountId: EntityId): Promise<LocalDraft[]> {
+    return this.metadataRepository.listDrafts(accountId);
+  }
+
+  getDraft(draftId: EntityId): Promise<LocalDraft | undefined> {
+    return this.metadataRepository.getDraft(draftId);
+  }
+
+  async createDraft(input: CreateDraftInput): Promise<LocalDraft> {
+    await this.getAccountConfig(input.accountId);
+    const now = toIsoDateTime();
+    const draft: LocalDraft = {
+      id: createStableEntityId("draft", [
+        input.accountId,
+        crypto.randomUUID()
+      ]),
+      accountId: input.accountId,
+      mode: "new",
+      references: [],
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: "",
+      bodyFormat: "plain-text",
+      bodyText: "",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    await this.metadataRepository.saveDraft(draft);
+    return draft;
+  }
+
+  async createReplyDraft(input: CreateReplyDraftInput): Promise<LocalDraft> {
+    const accountConfig = await this.getAccountConfig(input.accountId);
+    const message = await this.metadataRepository.getMessageDetail(
+      input.accountId,
+      input.providerMessageId
+    );
+
+    if (!message) {
+      throw new YuMailError({
+        code: "reply_message_not_cached",
+        message: "Load the message before creating a reply."
+      });
+    }
+
+    const now = toIsoDateTime();
+    const draft: LocalDraft = {
+      id: createStableEntityId("draft", [
+        input.accountId,
+        crypto.randomUUID()
+      ]),
+      accountId: input.accountId,
+      mode: "reply",
+      relatedMessageId: message.id,
+      relatedProviderMessageId: message.providerMessageId,
+      relatedProviderThreadId: message.providerThreadId,
+      relatedMessageIdHeader: message.messageIdHeader,
+      references: message.references ?? [],
+      to: getReplyRecipients(message, accountConfig.account.emailAddress),
+      cc: [],
+      bcc: [],
+      subject: createReplySubject(message.subject),
+      bodyFormat: "plain-text",
+      bodyText: "",
+      createdAt: now,
+      updatedAt: now
+    };
+
+    await this.metadataRepository.saveDraft(draft);
+    return draft;
+  }
+
+  async updateDraft(input: UpdateDraftInput): Promise<LocalDraft> {
+    const existingDraft = await this.requireDraft(input.draftId);
+    const updatedDraft: LocalDraft = {
+      ...existingDraft,
+      to: normalizeRecipients(input.to),
+      cc: normalizeRecipients(input.cc),
+      bcc: normalizeRecipients(input.bcc),
+      subject: input.subject,
+      bodyText: input.bodyText,
+      updatedAt: toIsoDateTime()
+    };
+
+    await this.metadataRepository.saveDraft(updatedDraft);
+    return updatedDraft;
+  }
+
+  discardDraft(draftId: EntityId): Promise<void> {
+    return this.metadataRepository.deleteDraft(draftId);
+  }
+
+  async sendDraft(draftId: EntityId): Promise<SendMessageResult> {
+    const draft = await this.requireDraft(draftId);
+    const validation = validateRecipients(draft);
+
+    if (!validation.isValid) {
+      throw new YuMailError({
+        code: validation.recipientCount === 0
+          ? "missing_recipients"
+          : "invalid_recipients",
+        message: validation.recipientCount === 0
+          ? "Add at least one recipient before sending."
+          : `Correct these recipient addresses before sending: ${validation.invalidAddresses.join(", ")}.`
+      });
+    }
+
+    const accountConfig = await this.getAccountConfig(draft.accountId);
+    const secret = await this.secretStorage.getSecret(accountConfig.credentialReference);
+
+    if (!secret) {
+      throw new YuMailError({
+        code: "missing_jmap_secret",
+        message: "JMAP credentials are missing from secure storage."
+      });
+    }
+
+    const provider = new JmapProvider({
+      localAccountId: accountConfig.account.id,
+      emailAddress: accountConfig.account.emailAddress,
+      baseUrl: accountConfig.jmapBaseUrl,
+      authSecret: secret,
+      jmapAccountId: accountConfig.jmapAccountId,
+      fetch: this.fetchImpl
+    });
+    const sendInput = {
+      accountId: draft.accountId,
+      from: {
+        name: accountConfig.account.displayName,
+        address: accountConfig.account.emailAddress
+      },
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      subject: draft.subject,
+      bodyText: draft.bodyText,
+      replyTo: draft.mode === "reply" && draft.relatedMessageId
+        && draft.relatedProviderMessageId
+        ? {
+          messageId: draft.relatedMessageId,
+          providerMessageId: draft.relatedProviderMessageId,
+          providerThreadId: draft.relatedProviderThreadId,
+          messageIdHeader: draft.relatedMessageIdHeader,
+          references: draft.references
+        }
+        : undefined
+    };
+    const result = sendInput.replyTo
+      ? await provider.replyMessage({
+        ...sendInput,
+        replyTo: sendInput.replyTo
+      })
+      : await provider.sendMessage(sendInput);
+
+    await this.metadataRepository.deleteDraft(draft.id);
+    return result;
+  }
+
+  private async getAccountConfig(accountId: EntityId): Promise<StoredJmapAccountConfig> {
+    const accountConfigs = await this.metadataRepository.listAccountConfigs();
+    const accountConfig = accountConfigs.find(
+      (candidate) => candidate.account.id === accountId
+    );
+
+    if (!accountConfig) {
+      throw new YuMailError({
+        code: "mail_account_not_found",
+        message: "The selected mail account is not configured."
+      });
+    }
+
+    return accountConfig;
+  }
+
+  private async requireDraft(draftId: EntityId): Promise<LocalDraft> {
+    const draft = await this.metadataRepository.getDraft(draftId);
+
+    if (!draft) {
+      throw new YuMailError({
+        code: "draft_not_found",
+        message: "The selected local draft no longer exists."
+      });
+    }
+
+    return draft;
+  }
 }
 
 class DefaultThreadReadingService implements ThreadReadingService {
@@ -424,6 +707,52 @@ class DefaultMailAccountService implements MailAccountService {
 function findInboxMailbox(mailboxes: Mailbox[]): Mailbox | undefined {
   return mailboxes.find((mailbox) => mailbox.role === "inbox")
     ?? mailboxes.find((mailbox) => mailbox.name.toLowerCase() === "inbox");
+}
+
+function createReplySubject(subject: string): string {
+  return /^\s*re\s*:/iu.test(subject) ? subject : `Re: ${subject}`;
+}
+
+function getReplyRecipients(
+  message: Message,
+  accountEmailAddress: string
+): Recipient[] {
+  if (message.replyTo && message.replyTo.length > 0) {
+    return normalizeRecipients(message.replyTo);
+  }
+
+  if (message.from.address.toLowerCase() !== accountEmailAddress.toLowerCase()) {
+    return normalizeRecipients([message.from]);
+  }
+
+  return normalizeRecipients(
+    message.to.filter(
+      (recipient) => recipient.address.toLowerCase() !== accountEmailAddress.toLowerCase()
+    )
+  );
+}
+
+function normalizeRecipients(recipients: Recipient[]): Recipient[] {
+  const normalizedRecipients = new Map<string, Recipient>();
+
+  for (const recipient of recipients) {
+    const address = recipient.address.trim();
+
+    if (!address) {
+      continue;
+    }
+
+    normalizedRecipients.set(address.toLowerCase(), {
+      ...(recipient.name?.trim() ? { name: recipient.name.trim() } : {}),
+      address
+    });
+  }
+
+  return [...normalizedRecipients.values()];
+}
+
+function isValidEmailAddress(value: string): boolean {
+  return /^[^\s@<>(),;:]+@[^\s@<>(),;:]+\.[^\s@<>(),;:]+$/u.test(value);
 }
 
 function getErrorMessage(error: unknown): string {

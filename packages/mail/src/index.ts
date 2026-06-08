@@ -82,9 +82,12 @@ export interface Message extends TimestampedEntity {
   messageIdHeader?: string;
   subject: string;
   from: Recipient;
+  replyTo?: Recipient[];
   to: Recipient[];
   cc: Recipient[];
   bcc: Recipient[];
+  inReplyToMessageIds?: string[];
+  references?: string[];
   date: IsoDateTime;
   receivedAt?: IsoDateTime;
   snippet: string;
@@ -118,9 +121,29 @@ export interface ThreadDetail extends Thread {
   messages: MessageDetail[];
 }
 
+export type DraftMode = "new" | "reply";
+
+export interface LocalDraft extends TimestampedEntity {
+  id: EntityId;
+  accountId: EntityId;
+  mode: DraftMode;
+  relatedMessageId?: EntityId;
+  relatedProviderMessageId?: string;
+  relatedProviderThreadId?: string;
+  relatedMessageIdHeader?: string;
+  references: string[];
+  to: Recipient[];
+  cc: Recipient[];
+  bcc: Recipient[];
+  subject: string;
+  bodyFormat: "plain-text";
+  bodyText: string;
+}
+
 export interface MailProviderCapabilities {
   providerType: ProviderType;
   supportsThreads: boolean;
+  supportsSubmission: boolean;
   supportsServerDrafts: boolean;
   supportsArchive: boolean;
   supportsMove: boolean;
@@ -158,13 +181,25 @@ export interface SendMessageInput {
   bodyText: string;
   bodyHtml?: string;
   attachments?: Attachment[];
-  replyToMessageId?: EntityId;
+  replyTo?: {
+    messageId: EntityId;
+    providerMessageId: string;
+    providerThreadId?: string;
+    messageIdHeader?: string;
+    references?: string[];
+  };
 }
 
 export interface SendMessageResult {
   providerMessageId: string;
+  providerSubmissionId?: string;
+  providerThreadId?: string;
   messageId?: EntityId;
   sentAt: IsoDateTime;
+}
+
+export interface ReplyMessageInput extends SendMessageInput {
+  replyTo: NonNullable<SendMessageInput["replyTo"]>;
 }
 
 export interface SaveDraftInput extends SendMessageInput {
@@ -219,6 +254,7 @@ export interface MailProvider {
   getMessage(input: GetMessageInput): Promise<MessageDetail>;
   getThread(input: GetThreadInput): Promise<ThreadDetail>;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
+  replyMessage(input: ReplyMessageInput): Promise<SendMessageResult>;
   saveDraft(input: SaveDraftInput): Promise<SaveDraftResult>;
   markRead(input: MessageMutationInput): Promise<void>;
   markUnread(input: MessageMutationInput): Promise<void>;
@@ -231,6 +267,7 @@ export interface MailProvider {
 
 const JMAP_CORE_CAPABILITY = "urn:ietf:params:jmap:core";
 const JMAP_MAIL_CAPABILITY = "urn:ietf:params:jmap:mail";
+const JMAP_SUBMISSION_CAPABILITY = "urn:ietf:params:jmap:submission";
 
 type FetchFunction = typeof fetch;
 type JmapMethodCall = [string, Record<string, unknown>, string];
@@ -254,6 +291,7 @@ export interface JmapProviderOptions {
   emailAddress: EmailAddress;
   baseUrl: string;
   authSecret: string;
+  jmapAccountId?: string;
   fetch?: FetchFunction;
 }
 
@@ -350,6 +388,17 @@ function getProviderMailboxId(mailboxId: EntityId): string {
 
 function createMessageEntityId(accountId: EntityId, providerMessageId: string): EntityId {
   return `${accountId}:message:${encodeURIComponent(providerMessageId)}`;
+}
+
+function writeRecipient(recipient: Recipient): Record<string, string> {
+  return {
+    ...(recipient.name ? { name: recipient.name } : {}),
+    email: recipient.address
+  };
+}
+
+function escapePatchPathSegment(value: string): string {
+  return value.replace(/~/gu, "~0").replace(/\//gu, "~1");
 }
 
 export function resolveProviderMessageId(input: GetMessageInput): string {
@@ -551,6 +600,33 @@ function getMethodResponse(
   return foundResponse[1];
 }
 
+function getCreatedRecord(
+  response: Record<string, unknown>,
+  creationId: string,
+  operation: string
+): Record<string, unknown> {
+  const created = getRecord(response, "created");
+  const createdRecord = created?.[creationId];
+
+  if (isRecord(createdRecord)) {
+    return createdRecord;
+  }
+
+  const notCreated = getRecord(response, "notCreated");
+  const error = notCreated?.[creationId];
+  const errorRecord = isRecord(error) ? error : undefined;
+  const errorType = errorRecord ? getString(errorRecord, "type") : undefined;
+  const description = errorRecord ? getString(errorRecord, "description") : undefined;
+
+  throw new YuMailError({
+    code: `jmap_${operation}_failed`,
+    message: description
+      ? `JMAP ${operation} failed: ${description}`
+      : `JMAP ${operation} failed${errorType ? ` (${errorType})` : ""}.`,
+    cause: errorRecord
+  });
+}
+
 function parseMethodResponses(responseBody: unknown): JmapMethodResponse[] {
   if (!isRecord(responseBody) || !Array.isArray(responseBody.methodResponses)) {
     throw new YuMailError({
@@ -594,6 +670,10 @@ abstract class PlaceholderMailProvider implements MailProvider {
     throw new UnsupportedProviderOperationError("sendMessage");
   }
 
+  async replyMessage(_input: ReplyMessageInput): Promise<SendMessageResult> {
+    throw new UnsupportedProviderOperationError("replyMessage");
+  }
+
   async saveDraft(_input: SaveDraftInput): Promise<SaveDraftResult> {
     throw new UnsupportedProviderOperationError("saveDraft");
   }
@@ -632,6 +712,7 @@ export class JmapProvider extends PlaceholderMailProvider {
   private readonly emailAddress: EmailAddress;
   private readonly baseUrl: string;
   private readonly authSecret: string;
+  private readonly configuredJmapAccountId?: string;
   private readonly fetchImpl: FetchFunction;
   private connectionInfo?: JmapConnectionInfo;
 
@@ -641,13 +722,15 @@ export class JmapProvider extends PlaceholderMailProvider {
     this.emailAddress = options.emailAddress;
     this.baseUrl = options.baseUrl;
     this.authSecret = options.authSecret;
+    this.configuredJmapAccountId = options.jmapAccountId;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
   protected readonly capabilities: MailProviderCapabilities = {
     providerType: "jmap",
     supportsThreads: true,
-    supportsServerDrafts: true,
+    supportsSubmission: true,
+    supportsServerDrafts: false,
     supportsArchive: true,
     supportsMove: true,
     supportsLabels: true,
@@ -773,9 +856,12 @@ export class JmapProvider extends PlaceholderMailProvider {
             "threadId",
             "messageId",
             "from",
+            "replyTo",
             "to",
             "cc",
             "bcc",
+            "inReplyTo",
+            "references",
             "subject",
             "receivedAt",
             "sentAt",
@@ -816,6 +902,8 @@ export class JmapProvider extends PlaceholderMailProvider {
             "cc",
             "bcc",
             "replyTo",
+            "inReplyTo",
+            "references",
             "subject",
             "receivedAt",
             "sentAt",
@@ -860,6 +948,136 @@ export class JmapProvider extends PlaceholderMailProvider {
     return this.normalizeMessageDetail(email, input.mailboxId);
   }
 
+  override async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
+    if (input.accountId !== this.localAccountId) {
+      throw new YuMailError({
+        code: "jmap_account_mismatch",
+        message: "The outgoing message account does not match the JMAP provider account."
+      });
+    }
+
+    if (input.attachments?.length || input.bodyHtml) {
+      throw new UnsupportedProviderOperationError("sendMessage rich content");
+    }
+
+    const connectionInfo = await this.discoverSession();
+    const accountCapabilities = connectionInfo.session.accounts[
+      connectionInfo.jmapAccountId
+    ]?.accountCapabilities;
+
+    if (!accountCapabilities?.[JMAP_SUBMISSION_CAPABILITY]) {
+      throw new YuMailError({
+        code: "jmap_submission_not_supported",
+        message: "The selected JMAP account does not support email submission."
+      });
+    }
+
+    const setupResponses = await this.callJmap([
+      [
+        "Identity/get",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          ids: null
+        },
+        "send-identities"
+      ],
+      [
+        "Mailbox/get",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          ids: null,
+          properties: ["id", "name", "role"]
+        },
+        "send-mailboxes"
+      ]
+    ]);
+    const identity = this.selectIdentity(
+      getMethodResponse(setupResponses, "Identity/get", "send-identities"),
+      input.from.address
+    );
+    const identityId = getString(identity, "id");
+
+    if (!identityId) {
+      throw new YuMailError({
+        code: "jmap_invalid_identity",
+        message: "JMAP returned a sending identity without an id."
+      });
+    }
+
+    const mailboxSelection = this.selectSubmissionMailboxes(
+      getMethodResponse(setupResponses, "Mailbox/get", "send-mailboxes")
+    );
+    const emailCreationId = "yumail-email";
+    const submissionCreationId = "yumail-submission";
+    const email = this.createOutgoingEmail(input, mailboxSelection.sourceMailboxId);
+    const sentMailboxPatch = this.createSentMailboxPatch(mailboxSelection);
+    const methodResponses = await this.callJmap([
+      [
+        "Email/set",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          create: {
+            [emailCreationId]: email
+          }
+        },
+        "create-outgoing-email"
+      ],
+      [
+        "EmailSubmission/set",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          create: {
+            [submissionCreationId]: {
+              identityId,
+              emailId: `#${emailCreationId}`
+            }
+          },
+          onSuccessUpdateEmail: {
+            [`#${submissionCreationId}`]: sentMailboxPatch
+          }
+        },
+        "submit-outgoing-email"
+      ]
+    ]);
+    const emailResponse = getMethodResponse(
+      methodResponses,
+      "Email/set",
+      "create-outgoing-email"
+    );
+    const submissionResponse = getMethodResponse(
+      methodResponses,
+      "EmailSubmission/set",
+      "submit-outgoing-email"
+    );
+    const createdEmail = getCreatedRecord(emailResponse, emailCreationId, "email_create");
+    const createdSubmission = getCreatedRecord(
+      submissionResponse,
+      submissionCreationId,
+      "submission"
+    );
+    const providerMessageId = getString(createdEmail, "id");
+
+    if (!providerMessageId) {
+      throw new YuMailError({
+        code: "jmap_invalid_send_response",
+        message: "JMAP did not return an id for the created outgoing email."
+      });
+    }
+
+    return {
+      providerMessageId,
+      providerSubmissionId: getString(createdSubmission, "id"),
+      providerThreadId:
+        getString(createdSubmission, "threadId") ?? getString(createdEmail, "threadId"),
+      messageId: createMessageEntityId(this.localAccountId, providerMessageId),
+      sentAt: getString(createdSubmission, "sendAt") ?? toIsoDateTime()
+    };
+  }
+
+  override replyMessage(input: ReplyMessageInput): Promise<SendMessageResult> {
+    return this.sendMessage(input);
+  }
+
   private parseSession(value: unknown): JmapSession {
     if (!isRecord(value)) {
       throw new YuMailError({
@@ -901,6 +1119,19 @@ export class JmapProvider extends PlaceholderMailProvider {
   }
 
   private getPrimaryMailAccountId(session: JmapSession): string {
+    if (this.configuredJmapAccountId) {
+      const configuredAccount = session.accounts[this.configuredJmapAccountId];
+
+      if (configuredAccount?.accountCapabilities?.[JMAP_MAIL_CAPABILITY]) {
+        return this.configuredJmapAccountId;
+      }
+
+      throw new YuMailError({
+        code: "jmap_configured_account_not_found",
+        message: "The saved JMAP mail account is no longer available in the session."
+      });
+    }
+
     const primaryMailAccountId = session.primaryAccounts?.[JMAP_MAIL_CAPABILITY];
 
     if (primaryMailAccountId && session.accounts[primaryMailAccountId]) {
@@ -923,6 +1154,16 @@ export class JmapProvider extends PlaceholderMailProvider {
 
   private async callJmap(methodCalls: JmapMethodCall[]): Promise<JmapMethodResponse[]> {
     const connectionInfo = await this.discoverSession();
+    const using = [
+      JMAP_CORE_CAPABILITY,
+      JMAP_MAIL_CAPABILITY,
+      ...(methodCalls.some(([methodName]) => (
+        methodName.startsWith("Identity/")
+        || methodName.startsWith("EmailSubmission/")
+      ))
+        ? [JMAP_SUBMISSION_CAPABILITY]
+        : [])
+    ];
     const response = await this.fetchImpl(connectionInfo.session.apiUrl, {
       method: "POST",
       headers: {
@@ -931,7 +1172,7 @@ export class JmapProvider extends PlaceholderMailProvider {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        using: [JMAP_CORE_CAPABILITY, JMAP_MAIL_CAPABILITY],
+        using,
         methodCalls
       })
     });
@@ -969,9 +1210,12 @@ export class JmapProvider extends PlaceholderMailProvider {
       messageIdHeader: firstStringValue(email.messageId),
       subject,
       from,
+      replyTo: readRecipients(email, "replyTo"),
       to: readRecipients(email, "to"),
       cc: readRecipients(email, "cc"),
       bcc: readRecipients(email, "bcc"),
+      inReplyToMessageIds: getStringArray(email, "inReplyTo"),
+      references: getStringArray(email, "references"),
       date: receivedAt ?? sentAt ?? now,
       receivedAt,
       snippet: getString(email, "preview") ?? "",
@@ -1029,12 +1273,136 @@ export class JmapProvider extends PlaceholderMailProvider {
       }))
     };
   }
+
+  private selectIdentity(
+    response: Record<string, unknown>,
+    fromAddress: EmailAddress
+  ): Record<string, unknown> {
+    const identities = Array.isArray(response.list)
+      ? response.list.filter(isRecord)
+      : [];
+    const normalizedFromAddress = fromAddress.trim().toLowerCase();
+    const exactIdentity = identities.find(
+      (identity) => getString(identity, "email")?.toLowerCase() === normalizedFromAddress
+    );
+
+    if (exactIdentity) {
+      return exactIdentity;
+    }
+
+    const fromDomain = normalizedFromAddress.split("@")[1];
+    const wildcardIdentity = identities.find((identity) => {
+      const identityAddress = getString(identity, "email")?.toLowerCase();
+      return identityAddress === `*@${fromDomain}`;
+    });
+
+    if (wildcardIdentity) {
+      return wildcardIdentity;
+    }
+
+    throw new YuMailError({
+      code: "jmap_send_identity_not_found",
+      message: `No JMAP sending identity is available for ${fromAddress}.`
+    });
+  }
+
+  private selectSubmissionMailboxes(response: Record<string, unknown>): {
+    sourceMailboxId: string;
+    sentMailboxId: string;
+  } {
+    const mailboxes = Array.isArray(response.list)
+      ? response.list.filter(isRecord)
+      : [];
+    const draftsMailbox = mailboxes.find(
+      (mailbox) => (
+        getString(mailbox, "role")?.toLowerCase() === "drafts"
+        || getString(mailbox, "name")?.toLowerCase() === "drafts"
+      )
+    );
+    const sentMailbox = mailboxes.find(
+      (mailbox) => (
+        getString(mailbox, "role")?.toLowerCase() === "sent"
+        || getString(mailbox, "name")?.toLowerCase() === "sent"
+      )
+    );
+    const sentMailboxId = sentMailbox ? getString(sentMailbox, "id") : undefined;
+    const sourceMailboxId = (draftsMailbox ? getString(draftsMailbox, "id") : undefined)
+      ?? sentMailboxId;
+
+    if (!sourceMailboxId || !sentMailboxId) {
+      throw new YuMailError({
+        code: "jmap_submission_mailbox_not_found",
+        message: "JMAP sending requires a Sent mailbox."
+      });
+    }
+
+    return {
+      sourceMailboxId,
+      sentMailboxId
+    };
+  }
+
+  private createOutgoingEmail(
+    input: SendMessageInput,
+    sourceMailboxId: string
+  ): Record<string, unknown> {
+    const replyMessageId = input.replyTo?.messageIdHeader;
+    const references = unique([
+      ...(input.replyTo?.references ?? []),
+      ...(replyMessageId ? [replyMessageId] : [])
+    ]);
+
+    return {
+      mailboxIds: {
+        [sourceMailboxId]: true
+      },
+      keywords: {
+        "$draft": true,
+        "$seen": true
+      },
+      from: [writeRecipient(input.from)],
+      to: input.to.map(writeRecipient),
+      cc: (input.cc ?? []).map(writeRecipient),
+      bcc: (input.bcc ?? []).map(writeRecipient),
+      subject: input.subject,
+      ...(replyMessageId ? { inReplyTo: [replyMessageId] } : {}),
+      ...(references.length > 0 ? { references } : {}),
+      bodyValues: {
+        "yumail-text": {
+          value: input.bodyText
+        }
+      },
+      textBody: [
+        {
+          partId: "yumail-text",
+          type: "text/plain"
+        }
+      ]
+    };
+  }
+
+  private createSentMailboxPatch(mailboxSelection: {
+    sourceMailboxId: string;
+    sentMailboxId: string;
+  }): Record<string, unknown> {
+    const sourceMailboxPath = escapePatchPathSegment(mailboxSelection.sourceMailboxId);
+    const sentMailboxPath = escapePatchPathSegment(mailboxSelection.sentMailboxId);
+
+    return {
+      "keywords/$draft": null,
+      [`mailboxIds/${sentMailboxPath}`]: true,
+      ...(mailboxSelection.sentMailboxId !== mailboxSelection.sourceMailboxId
+        ? { [`mailboxIds/${sourceMailboxPath}`]: null }
+        : {})
+    };
+  }
 }
 
 export class ImapSmtpProvider extends PlaceholderMailProvider {
   protected readonly capabilities: MailProviderCapabilities = {
     providerType: "imap-smtp",
     supportsThreads: false,
+    supportsSubmission: false,
     supportsServerDrafts: false,
     supportsArchive: false,
     supportsMove: false,

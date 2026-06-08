@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createComposeService,
   createMailAccountService,
-  createThreadReadingService
+  createThreadReadingService,
+  parseRecipientInput,
+  validateRecipients
 } from "../dist/index.js";
 
 function jsonResponse(body, status = 200) {
@@ -21,7 +24,8 @@ function createFetchMock(requestLog = []) {
         accounts: {
           accountA: {
             accountCapabilities: {
-              "urn:ietf:params:jmap:mail": {}
+              "urn:ietf:params:jmap:mail": {},
+              "urn:ietf:params:jmap:submission": {}
             }
           }
         },
@@ -119,6 +123,94 @@ function createFetchMock(requestLog = []) {
   };
 }
 
+function createComposeFetchMock(requestLog, failSubmission = false) {
+  return async (_url, init) => {
+    if (init?.method === "GET") {
+      return jsonResponse({
+        accounts: {
+          accountA: {
+            accountCapabilities: {
+              "urn:ietf:params:jmap:mail": {},
+              "urn:ietf:params:jmap:submission": {}
+            }
+          }
+        },
+        primaryAccounts: {
+          "urn:ietf:params:jmap:mail": "accountA"
+        },
+        apiUrl: "https://mail.example.com/jmap/api"
+      });
+    }
+
+    const request = JSON.parse(String(init?.body));
+    requestLog.push(request);
+    const methodNames = request.methodCalls.map((methodCall) => methodCall[0]);
+
+    if (methodNames.includes("Identity/get")) {
+      return jsonResponse({
+        methodResponses: [
+          [
+            "Identity/get",
+            {
+              list: [{ id: "identity-1", email: "yu@example.com" }]
+            },
+            "send-identities"
+          ],
+          [
+            "Mailbox/get",
+            {
+              list: [
+                { id: "drafts-id", name: "Drafts", role: "drafts" },
+                { id: "sent-id", name: "Sent", role: "sent" }
+              ]
+            },
+            "send-mailboxes"
+          ]
+        ]
+      });
+    }
+
+    return jsonResponse({
+      methodResponses: [
+        [
+          "Email/set",
+          {
+            created: {
+              "yumail-email": {
+                id: "sent-email-1",
+                threadId: "thread-1"
+              }
+            }
+          },
+          "create-outgoing-email"
+        ],
+        [
+          "EmailSubmission/set",
+          failSubmission
+            ? {
+              notCreated: {
+                "yumail-submission": {
+                  type: "forbiddenToSend",
+                  description: "Submission rejected."
+                }
+              }
+            }
+            : {
+              created: {
+                "yumail-submission": {
+                  id: "submission-1",
+                  threadId: "thread-1",
+                  sendAt: "2026-06-08T14:00:00.000Z"
+                }
+              }
+            },
+          "submit-outgoing-email"
+        ]
+      ]
+    });
+  };
+}
+
 class MemoryRepository {
   snapshot = {
     accountConfigs: [],
@@ -127,6 +219,7 @@ class MemoryRepository {
     messageDetailsByCacheKey: {},
     syncStates: []
   };
+  drafts = {};
 
   async loadSnapshot() {
     return this.snapshot;
@@ -178,6 +271,24 @@ class MemoryRepository {
 
   async listSyncStates() {
     return this.snapshot.syncStates;
+  }
+
+  async listDrafts(accountId) {
+    return Object.values(this.drafts)
+      .filter((draft) => draft.accountId === accountId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async getDraft(draftId) {
+    return this.drafts[draftId];
+  }
+
+  async saveDraft(draft) {
+    this.drafts[draft.id] = draft;
+  }
+
+  async deleteDraft(draftId) {
+    delete this.drafts[draftId];
   }
 }
 
@@ -311,3 +422,219 @@ test("loads message detail from the provider once and then uses the local cache"
   assert.equal(cached.messageDetail.bodyText, "Provider body");
   assert.equal(detailRequests.length, 1);
 });
+
+test("parses and validates compose recipients", () => {
+  const recipients = parseRecipientInput(
+    "Ada Lovelace <ada@example.com>; team@example.com\ninvalid"
+  );
+  const validation = validateRecipients({
+    to: recipients,
+    cc: [],
+    bcc: []
+  });
+
+  assert.deepEqual(recipients, [
+    { name: "Ada Lovelace", address: "ada@example.com" },
+    { address: "team@example.com" },
+    { address: "invalid" }
+  ]);
+  assert.equal(validation.isValid, false);
+  assert.deepEqual(validation.invalidAddresses, ["invalid"]);
+  assert.equal(validateRecipients({ to: [], cc: [], bcc: [] }).isValid, false);
+});
+
+test("creates and updates a local draft without sending", async () => {
+  const repository = new MemoryRepository();
+  repository.snapshot.accountConfigs = [createStoredAccountConfig()];
+  const requestLog = [];
+  const service = createComposeService({
+    metadataRepository: repository,
+    secretStorage: new MemorySecretStorage(),
+    fetch: createComposeFetchMock(requestLog)
+  });
+
+  const draft = await service.createDraft({ accountId: "account:yu" });
+  const updatedDraft = await service.updateDraft({
+    draftId: draft.id,
+    to: [{ address: "ada@example.com" }],
+    cc: [],
+    bcc: [],
+    subject: "Local draft",
+    bodyText: "Saved locally"
+  });
+
+  assert.equal((await service.listDrafts("account:yu"))[0].bodyText, "Saved locally");
+  assert.deepEqual(await service.getDraft(draft.id), updatedDraft);
+  assert.equal(requestLog.length, 0);
+});
+
+test("constructs reply context from cached message metadata", async () => {
+  const repository = new MemoryRepository();
+  repository.snapshot.accountConfigs = [createStoredAccountConfig()];
+  await repository.saveMessageDetail(createCachedMessageDetail());
+  const service = createComposeService({
+    metadataRepository: repository,
+    secretStorage: new MemorySecretStorage()
+  });
+
+  const draft = await service.createReplyDraft({
+    accountId: "account:yu",
+    providerMessageId: "email-1"
+  });
+
+  assert.equal(draft.mode, "reply");
+  assert.deepEqual(draft.to, [{ name: "Ada", address: "reply@example.com" }]);
+  assert.equal(draft.subject, "Re: Project update");
+  assert.equal(draft.relatedMessageId, "account:yu:message:email-1");
+  assert.equal(draft.relatedProviderThreadId, "thread-1");
+  assert.equal(draft.relatedMessageIdHeader, "message@example.com");
+  assert.deepEqual(draft.references, ["root@example.com"]);
+});
+
+test("sends only on explicit service call and removes a successful draft", async () => {
+  const repository = new MemoryRepository();
+  const accountConfig = createStoredAccountConfig();
+  repository.snapshot.accountConfigs = [accountConfig];
+  const secretStorage = new MemorySecretStorage();
+  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  const requestLog = [];
+  const service = createComposeService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createComposeFetchMock(requestLog)
+  });
+  const draft = await service.createDraft({ accountId: "account:yu" });
+  await service.updateDraft({
+    draftId: draft.id,
+    to: [{ address: "ada@example.com" }],
+    cc: [],
+    bcc: [],
+    subject: "Manual send",
+    bodyText: "Send only after click"
+  });
+
+  assert.equal(requestLog.length, 0);
+  assert.equal(
+    JSON.stringify(repository.drafts).includes("Bearer secure-token"),
+    false
+  );
+  const result = await service.sendDraft(draft.id);
+
+  assert.equal(result.providerSubmissionId, "submission-1");
+  assert.equal(await service.getDraft(draft.id), undefined);
+  assert.deepEqual(secretStorage.getReferences, [accountConfig.credentialReference]);
+  assert.equal(requestLog.length, 2);
+});
+
+test("keeps a local draft when JMAP submission fails", async () => {
+  const repository = new MemoryRepository();
+  const accountConfig = createStoredAccountConfig();
+  repository.snapshot.accountConfigs = [accountConfig];
+  const secretStorage = new MemorySecretStorage();
+  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  const service = createComposeService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createComposeFetchMock([], true)
+  });
+  const draft = await service.createDraft({ accountId: "account:yu" });
+  await service.updateDraft({
+    draftId: draft.id,
+    to: [{ address: "ada@example.com" }],
+    cc: [],
+    bcc: [],
+    subject: "Retry later",
+    bodyText: "Keep this draft"
+  });
+
+  await assert.rejects(service.sendDraft(draft.id), /Submission rejected/u);
+  assert.equal((await service.getDraft(draft.id)).bodyText, "Keep this draft");
+  assert.equal(
+    JSON.stringify(repository.drafts).includes("Bearer secure-token"),
+    false
+  );
+});
+
+test("blocks invalid recipients before credential or provider access", async () => {
+  const repository = new MemoryRepository();
+  const accountConfig = createStoredAccountConfig();
+  repository.snapshot.accountConfigs = [accountConfig];
+  const secretStorage = new MemorySecretStorage();
+  secretStorage.secrets[accountConfig.credentialReference] = "Bearer secure-token";
+  const requestLog = [];
+  const service = createComposeService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: createComposeFetchMock(requestLog)
+  });
+  const draft = await service.createDraft({ accountId: "account:yu" });
+  await service.updateDraft({
+    draftId: draft.id,
+    to: [{ address: "invalid" }],
+    cc: [],
+    bcc: [],
+    subject: "Do not send",
+    bodyText: "Invalid recipient"
+  });
+
+  await assert.rejects(
+    service.sendDraft(draft.id),
+    (error) => {
+      assert.equal(error.code, "invalid_recipients");
+      return true;
+    }
+  );
+  assert.deepEqual(secretStorage.getReferences, []);
+  assert.equal(requestLog.length, 0);
+  assert.notEqual(await service.getDraft(draft.id), undefined);
+});
+
+function createStoredAccountConfig() {
+  return {
+    account: {
+      id: "account:yu",
+      displayName: "Yu",
+      emailAddress: "yu@example.com",
+      providerType: "jmap",
+      providerConfigReference: "provider-config:yu",
+      isDefault: true,
+      createdAt: "2026-06-08T12:00:00.000Z",
+      updatedAt: "2026-06-08T12:00:00.000Z"
+    },
+    jmapBaseUrl: "https://mail.example.com",
+    credentialReference: "credential:jmap:yu",
+    jmapAccountId: "accountA"
+  };
+}
+
+function createCachedMessageDetail() {
+  return {
+    id: "account:yu:message:email-1",
+    accountId: "account:yu",
+    providerType: "jmap",
+    providerMessageId: "email-1",
+    providerThreadId: "thread-1",
+    mailboxId: "account:yu:mailbox:inbox-id",
+    messageIdHeader: "message@example.com",
+    references: ["root@example.com"],
+    subject: "Project update",
+    from: { name: "Ada", address: "ada@example.com" },
+    replyTo: [{ name: "Ada", address: "reply@example.com" }],
+    to: [{ address: "yu@example.com" }],
+    cc: [],
+    bcc: [],
+    date: "2026-06-08T10:00:00.000Z",
+    snippet: "Update",
+    isRead: true,
+    isFlagged: false,
+    isAnswered: false,
+    hasAttachments: false,
+    systemTags: [],
+    userTags: [],
+    createdAt: "2026-06-08T12:00:00.000Z",
+    updatedAt: "2026-06-08T12:00:00.000Z",
+    bodyText: "Project update",
+    bodyParts: [],
+    attachments: []
+  };
+}

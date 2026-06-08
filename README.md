@@ -2,10 +2,12 @@
 
 YuMail is a desktop-first, privacy-first email client based on the repository PRD.
 The current implementation supports JMAP account setup, Inbox metadata loading, and a
-cache-first safe message reading path.
+cache-first safe message reading path, local drafts, replies, and manual JMAP
+submission.
 
 This is not a complete mail client yet. Continuous sync, IMAP/SMTP, Gmail, Outlook,
-sending, and live AI calls are intentionally deferred.
+attachments in outgoing mail, provider-synced drafts, and live AI calls are
+intentionally deferred.
 
 ## Requirements
 
@@ -74,8 +76,8 @@ packages/
 - Vite + React + TypeScript desktop shell.
 - Pure-black/dark-first UI tokens.
 - UI primitives: `Button`, `IconButton`, `Surface`, `Typography`, `Input`, `Textarea`, `Tag`/`Chip`, and `Skeleton`.
-- JMAP-backed Inbox and safe message reading screens, plus deferred Compose controls.
-- JMAP read provider and future IMAP/SMTP provider placeholder.
+- JMAP-backed Inbox, safe message reading, local drafts, reply, and compose screens.
+- JMAP read/submission provider and future IMAP/SMTP provider placeholder.
 - AI provider/action interfaces for summarize, tags, action items, drafts, draft improvement, send checks, and writing-style analysis.
 - SQLite migration drafts for account metadata, message bodies, attachments, AI artifacts,
   sync state, and preferences.
@@ -117,10 +119,11 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001, 0002, and 0003.
+- Rust registers migrations 0001 through 0004.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
-  tags, body cache, attachments, sync states, and preferences persist in SQLite.
+  tags, body cache, attachments, local drafts, sync states, and preferences persist in
+  SQLite.
 
 The database lives in Tauri's app configuration directory. With the current
 `com.yumail.desktop` identifier, the expected locations are:
@@ -137,6 +140,27 @@ unavailable.
 The app performs deletion-only cleanup of the legacy
 `yumail.development-secrets.v1` and `yumail.mail-metadata.v1` browser-storage keys.
 There is no browser-storage persistence fallback.
+
+## Compose And Send
+
+Milestone 3 adds a plain-text compose workflow:
+
+- New and reply drafts are created through `ComposeService`.
+- Draft changes autosave to SQLite and survive restart.
+- Reply drafts use Reply-To when available, preserve the subject, and retain RFC
+  Message-ID reference context.
+- Recipient validation runs before submission.
+- The secure credential reference is resolved only when the user clicks Send.
+- Successful submission removes the local draft; failed submission leaves it available
+  for correction or retry.
+
+The JMAP provider first loads sending identities and Drafts/Sent mailbox roles. It then
+sends one JMAP request containing `Email/set` followed by `EmailSubmission/set`. The
+submission references the newly created Email by its creation id.
+`onSuccessUpdateEmail` removes the draft keyword and transitions the Email to Sent.
+
+Drafts are local-only. Provider-side draft synchronization, outgoing attachments, rich
+text/HTML composition, scheduled send, and send queues are deferred.
 
 ## Important Guardrails
 

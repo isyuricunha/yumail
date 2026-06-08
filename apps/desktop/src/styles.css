@@ -135,12 +135,14 @@
 
 .mail-list,
 .thread-panel,
+.compose-panel,
 .detail-rail {
   min-height: 0;
 }
 
 .mail-list,
 .thread-panel,
+.compose-panel,
 .rail-panel {
   display: flex;
   flex-direction: column;
@@ -148,7 +150,8 @@
 }
 
 .panel-heading,
-.thread-toolbar {
+.thread-toolbar,
+.compose-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -158,6 +161,10 @@
 }
 
 .thread-toolbar > div:first-child {
+  min-width: 0;
+}
+
+.compose-heading > div:first-child {
   min-width: 0;
 }
 
@@ -409,10 +416,138 @@
   height: 100%;
 }
 
-.compose-form {
-  display: grid;
-  gap: var(--ym-space-3);
+.compose-panel {
+  background: var(--ym-color-panel);
+}
+
+.compose-editor {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
   padding: var(--ym-space-4);
+}
+
+.compose-field {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--ym-color-border);
+}
+
+.compose-field > span {
+  color: var(--ym-color-text-subtle);
+  font-size: 12px;
+}
+
+.compose-field .ym-input {
+  border: 0;
+  background: transparent;
+}
+
+.compose-field .ym-input:focus {
+  background: transparent;
+}
+
+.compose-recipient-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.compose-recipient-row .compose-field:first-child {
+  border-right: 1px solid var(--ym-color-border);
+  padding-right: var(--ym-space-3);
+}
+
+.compose-recipient-row .compose-field:last-child {
+  padding-left: var(--ym-space-3);
+}
+
+.compose-subject-field {
+  margin-bottom: var(--ym-space-3);
+}
+
+.compose-body {
+  flex: 1 1 auto;
+  min-height: 280px;
+  border: 0;
+  background: transparent;
+  padding: var(--ym-space-4) 0;
+  resize: none;
+}
+
+.compose-body:focus {
+  background: transparent;
+}
+
+.compose-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ym-space-4);
+  border-top: 1px solid var(--ym-color-border);
+  padding: var(--ym-space-3) var(--ym-space-4);
+}
+
+.compose-status {
+  min-width: 0;
+}
+
+.compose-status p {
+  overflow-wrap: anywhere;
+}
+
+.draft-list {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--ym-space-2);
+}
+
+.draft-list-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--ym-space-2);
+  min-height: 180px;
+}
+
+.draft-row {
+  display: grid;
+  gap: var(--ym-space-2);
+  width: 100%;
+  margin-bottom: var(--ym-space-2);
+  border: 1px solid var(--ym-color-border);
+  border-radius: var(--ym-radius-sm);
+  background: #101012;
+  color: inherit;
+  padding: var(--ym-space-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.draft-row:hover,
+.draft-row--active {
+  border-color: var(--ym-color-accent-strong);
+}
+
+.draft-row-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ym-space-2);
+}
+
+.draft-row-heading p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.draft-rail-status {
+  margin-top: auto;
+  border-top: 1px solid var(--ym-color-border);
+  padding: var(--ym-space-3);
 }
 
 .settings-form {
@@ -456,4 +591,23 @@
 
 .status-row--muted {
   color: var(--ym-color-text-subtle);
+}
+
+@media (max-width: 1120px) {
+  .workspace-grid {
+    grid-template-columns: 280px minmax(380px, 1fr) 280px;
+  }
+
+  .compose-recipient-row {
+    grid-template-columns: 1fr;
+  }
+
+  .compose-recipient-row .compose-field:first-child {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .compose-recipient-row .compose-field:last-child {
+    padding-left: 0;
+  }
 }

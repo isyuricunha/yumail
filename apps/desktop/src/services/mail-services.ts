@@ -1,4 +1,8 @@
-import { createMailAccountService, createThreadReadingService } from "@yumail/core";
+import {
+  createComposeService,
+  createMailAccountService,
+  createThreadReadingService
+} from "@yumail/core";
 import { SqliteMailMetadataRepository } from "@yumail/db";
 import { createTauriPlatformAdapters } from "@yumail/platform-tauri";
 
@@ -18,6 +22,10 @@ export function createDesktopMailServices() {
       secretStorage
     }),
     threadReadingService: createThreadReadingService({
+      metadataRepository,
+      secretStorage
+    }),
+    composeService: createComposeService({
       metadataRepository,
       secretStorage
     })

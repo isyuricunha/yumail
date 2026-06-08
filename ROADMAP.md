@@ -92,15 +92,30 @@ Remaining hardening:
 
 ## Milestone 3 - Compose And Send
 
-- Compose editor.
-- Reply flow.
-- JMAP send/submission path.
-- Local drafts where needed.
-- Send confirmation/guardrails.
+Status: implemented for manual plain-text JMAP submission.
+
+- Plain-text compose editor.
+- New and reply draft creation through `ComposeService`.
+- SQLite-backed local draft autosave, reload, and discard.
+- Reply-To, subject, Message-ID, References, and provider thread context.
+- Exact JMAP sending identity selection.
+- JMAP `Email/set` plus `EmailSubmission/set` using creation references.
+- Drafts-to-Sent transition after successful submission.
+- Explicit user-triggered Send with loading, success, and error states.
 
 Acceptance:
 
-- A user can send a reply manually.
+- A user can compose and send a new message manually.
+- A user can create and send a reply manually.
+- Failed submissions retain the local draft.
+
+Remaining hardening:
+
+- verify submission against a live Stalwart server and packaged desktop runtime.
+- add outgoing attachment upload and submission.
+- add rich-text/HTML composition.
+- decide whether provider-side draft synchronization is needed.
+- add offline send queue only as an explicit future feature.
 
 ## Milestone 4 - AI Provider Layer
 

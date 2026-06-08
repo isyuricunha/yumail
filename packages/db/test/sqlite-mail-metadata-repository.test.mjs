@@ -84,9 +84,12 @@ function createFixture() {
       name: "Ada",
       address: "ada@example.com"
     },
+    replyTo: [{ name: "Ada replies", address: "reply@example.com" }],
     to: [{ name: "Yu", address: "yu@example.com" }],
     cc: [{ address: "team@example.com" }],
     bcc: [{ address: "audit@example.com" }],
+    inReplyToMessageIds: ["previous@example.com"],
+    references: ["root@example.com", "previous@example.com"],
     date: timestamp,
     receivedAt: timestamp,
     snippet: "Persisted preview",
@@ -130,16 +133,34 @@ function createFixture() {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  const draft = {
+    id: `${accountId}:draft:local-1`,
+    accountId,
+    mode: "reply",
+    relatedMessageId: messageId,
+    relatedProviderMessageId: "message-1",
+    relatedProviderThreadId: "thread-1",
+    relatedMessageIdHeader: "message-1@example.com",
+    references: ["root@example.com", "message-1@example.com"],
+    to: [{ name: "Ada", address: "ada@example.com" }],
+    cc: [{ address: "team@example.com" }],
+    bcc: [],
+    subject: "Re: Persisted message",
+    bodyFormat: "plain-text",
+    bodyText: "Persisted local reply",
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
 
-  return { accountConfig, mailbox, messageDetail, syncState };
+  return { accountConfig, mailbox, messageDetail, syncState, draft };
 }
 
 test("registers and applies every SQLite migration", async () => {
   const database = new DatabaseSync(":memory:");
   await applyRegisteredMigrations(database);
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 3);
-  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3]);
+  assert.equal(INITIAL_SCHEMA_VERSION, 4);
+  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4]);
 
   const tables = database.prepare(`
     SELECT name
@@ -154,7 +175,7 @@ test("registers and applies every SQLite migration", async () => {
   database.close();
 });
 
-test("persists account, message, body cache, sync state, and preferences across reopen", async () => {
+test("persists mail cache, local drafts, sync state, and preferences across reopen", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "yumail-sqlite-"));
   const databasePath = path.join(directory, "yumail.sqlite3");
   const fixture = createFixture();
@@ -175,6 +196,7 @@ test("persists account, message, body cache, sync state, and preferences across 
     await firstRepository.saveMessages(fixture.mailbox.id, [fixture.messageDetail]);
     await firstRepository.saveMessageDetail(fixture.messageDetail);
     await firstRepository.saveSyncState(fixture.syncState);
+    await firstRepository.saveDraft(fixture.draft);
     await firstRepository.savePreference("reading.mode", { mode: "safe-html" });
     firstDatabase.close();
 
@@ -192,6 +214,9 @@ test("persists account, message, body cache, sync state, and preferences across 
       fixture.messageDetail.providerMessageId
     );
     const [syncState] = await secondRepository.listSyncStates();
+    const [draft] = await secondRepository.listDrafts(
+      fixture.accountConfig.account.id
+    );
     const preference = await secondRepository.getPreference("reading.mode");
     const serializedMetadata = JSON.stringify({
       accountConfig,
@@ -199,6 +224,7 @@ test("persists account, message, body cache, sync state, and preferences across 
       message,
       detail,
       syncState,
+      draft,
       preference
     });
 
@@ -208,6 +234,15 @@ test("persists account, message, body cache, sync state, and preferences across 
     assert.deepEqual(message.to, [{ name: "Yu", address: "yu@example.com" }]);
     assert.deepEqual(message.cc, [{ name: undefined, address: "team@example.com" }]);
     assert.deepEqual(message.bcc, [{ name: undefined, address: "audit@example.com" }]);
+    assert.deepEqual(message.replyTo, [{
+      name: "Ada replies",
+      address: "reply@example.com"
+    }]);
+    assert.deepEqual(message.inReplyToMessageIds, ["previous@example.com"]);
+    assert.deepEqual(message.references, [
+      "root@example.com",
+      "previous@example.com"
+    ]);
     assert.deepEqual(message.systemTags, ["important"]);
     assert.deepEqual(message.userTags, ["customer"]);
     assert.equal(detail.bodyText, "Persisted plain body");
@@ -215,6 +250,10 @@ test("persists account, message, body cache, sync state, and preferences across 
     assert.equal(detail.bodyParts[0].blobId, "body-blob");
     assert.equal(detail.attachments[0].filename, "report.pdf");
     assert.equal(syncState.syncCursor, "cursor-1");
+    assert.equal(draft.mode, "reply");
+    assert.equal(draft.relatedProviderMessageId, "message-1");
+    assert.deepEqual(draft.to, [{ name: "Ada", address: "ada@example.com" }]);
+    assert.equal(draft.bodyText, "Persisted local reply");
     assert.deepEqual(preference, { mode: "safe-html" });
     assert.equal(serializedMetadata.includes(authSecret), false);
 
@@ -232,6 +271,13 @@ test("persists account, message, body cache, sync state, and preferences across 
     assert.equal(bodyColumns.body_html_sanitized, null);
     assert.equal(bodyColumns.body_text, "Persisted plain body");
     assert.equal(bodyColumns.body_html_raw, "<p>Persisted HTML body</p>");
+
+    assert.deepEqual(
+      await secondRepository.getDraft(fixture.draft.id),
+      fixture.draft
+    );
+    await secondRepository.deleteDraft(fixture.draft.id);
+    assert.equal(await secondRepository.getDraft(fixture.draft.id), undefined);
 
     await secondRepository.saveMessages(fixture.mailbox.id, []);
     assert.deepEqual(await secondRepository.getMessages(fixture.mailbox.id), []);

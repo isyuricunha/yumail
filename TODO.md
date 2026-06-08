@@ -51,6 +51,20 @@
 - [x] Test migration application and SQLite persistence across database reopen.
 - [x] Test secure-storage reference use for saved connection checks and refresh.
 
+## Milestone 3 - Compose And Send
+
+- [x] Extend normalized mail models with local drafts and reply context.
+- [x] Implement JMAP identity selection and manual Email submission.
+- [x] Create outgoing Email and EmailSubmission objects in one JMAP request.
+- [x] Move successfully submitted Email objects from Drafts to Sent.
+- [x] Normalize Email creation and submission failures.
+- [x] Add `ComposeService` for create, update, discard, reply, and manual send.
+- [x] Validate and normalize recipients before sending.
+- [x] Persist local drafts and RFC reply metadata in SQLite migration 0004.
+- [x] Add compose, reply, autosave, discard, send, success, and error UI states.
+- [x] Keep provider calls, SQLite, credentials, and JMAP payloads out of React.
+- [x] Test JMAP payloads, reply metadata, drafts, failures, and explicit-send behavior.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
@@ -63,5 +77,11 @@
 - [ ] Decide whether SQLite database-at-rest encryption is needed.
 - [ ] Verify JMAP account setup against a live Stalwart server.
 - [ ] Verify JMAP body detail fixtures against a live Stalwart server.
+- [ ] Verify JMAP submission against a live Stalwart server.
+- [ ] Verify local draft autosave and native credential retrieval in a packaged desktop app.
 - [ ] Add a real platform external-link opener before richer link actions.
-- [ ] Decide whether provider-backed thread assembly belongs in Milestone 3 reply work.
+- [x] Keep Milestone 3 replies single-message based and preserve RFC reply references;
+  provider-backed multi-message thread assembly remains a later reading enhancement.
+- [ ] Add outgoing attachment upload/send support.
+- [ ] Add rich-text/HTML composition.
+- [ ] Decide whether provider-side draft synchronization is needed.

@@ -56,6 +56,18 @@ Milestone 2.5 replaces browser-backed persistence without changing these service
 contracts. Core still receives repository and secret-storage ports through dependency
 injection.
 
+Milestone 3 adds `ComposeService`, which owns:
+
+- new and reply draft creation.
+- recipient parsing and send-time validation.
+- local draft updates and deletion.
+- secure credential lookup.
+- explicit, user-triggered provider submission.
+
+React edits draft models and calls this service. It does not construct JMAP requests or
+access SQLite directly. Draft creation and autosave never invoke the provider; only
+`sendDraft` can submit mail.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -63,13 +75,28 @@ Owns normalized mail provider contracts.
 Current provider surfaces:
 
 - `MailProvider`
-- `JmapProvider` for read-only JMAP session discovery, mailbox listing, message metadata
-  listing, and full message detail reads.
+- `JmapProvider` for JMAP session discovery, mailbox listing, message reads, and manual
+  submission.
 - `ImapSmtpProvider` placeholder for future generic IMAP/SMTP.
 
 The UI must consume normalized YuMail models, not protocol-specific JMAP or IMAP data.
 JMAP `Email/get` body structures and values are normalized into `MessageDetail`,
 `MessageBodyPart`, and `Attachment` models before they leave this package.
+
+JMAP submission remains fully inside `JmapProvider`:
+
+1. The account is checked for `urn:ietf:params:jmap:submission`, and submission
+   requests advertise that capability.
+2. `Identity/get` selects an exact or permitted wildcard sending identity.
+3. `Mailbox/get` locates Drafts and Sent roles.
+4. `Email/set` creates an outgoing plain-text Email with `$draft` and `$seen`.
+5. `EmailSubmission/set` references that Email creation in the same JMAP request.
+6. `onSuccessUpdateEmail` removes `$draft`, moves the Email to Sent, and removes the
+   temporary Drafts membership.
+
+Replies include JMAP `inReplyTo` and `references` values derived from normalized RFC
+message identifiers. Provider message/thread IDs remain internal context and never leak
+into React protocol logic.
 
 ### `packages/ai`
 
@@ -98,6 +125,7 @@ Repository ports are split by responsibility:
 - `MessageRepository`
 - `MessageDetailRepository`
 - `SyncStateRepository`
+- `DraftRepository`
 - `UserPreferenceRepository`
 
 `MailMetadataRepository` composes the mail-related ports used by core services.
@@ -111,6 +139,11 @@ Body-part structure is stored as metadata JSON without duplicating body payloads
 Milestone 2.5 adds `jmap_account_configs` for JMAP URLs, discovered provider IDs, and
 credential references. Secret values are never stored in this table or any other SQLite
 table.
+
+Milestone 3 adds `local_drafts`. Local drafts contain account and reply references,
+recipient JSON, subject, plain-text body, and timestamps. They are local-only and are
+deleted after confirmed provider submission or explicit discard. Migration 0004 also
+adds cached `inReplyTo` and `references` metadata to messages.
 
 Desktop runtime persistence uses `SqliteMailMetadataRepository` through the platform
 database adapter. React components do not open SQLite directly.
@@ -175,7 +208,7 @@ path.
 
 ### Desktop Database Initialization
 
-Rust registers migrations 0001, 0002, and 0003 with the SQL plugin for
+Rust registers migrations 0001 through 0004 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 

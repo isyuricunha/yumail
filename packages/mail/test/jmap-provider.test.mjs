@@ -14,7 +14,8 @@ const sessionResponse = {
       isPersonal: true,
       isReadOnly: false,
       accountCapabilities: {
-        "urn:ietf:params:jmap:mail": {}
+        "urn:ietf:params:jmap:mail": {},
+        "urn:ietf:params:jmap:submission": {}
       }
     }
   },
@@ -218,6 +219,109 @@ function createFetchMock() {
   };
 }
 
+function createSendFetchMock(requestLog, failureType) {
+  return async (_url, init) => {
+    if (init?.method === "GET") {
+      return jsonResponse(sessionResponse);
+    }
+
+    const request = JSON.parse(String(init?.body));
+    requestLog.push(request);
+    const methodNames = request.methodCalls.map((methodCall) => methodCall[0]);
+
+    if (methodNames.includes("Identity/get")) {
+      return jsonResponse({
+        methodResponses: [
+          [
+            "Identity/get",
+            {
+              list: [
+                {
+                  id: "identity-1",
+                  name: "Yu",
+                  email: "yu@example.com"
+                }
+              ]
+            },
+            "send-identities"
+          ],
+          [
+            "Mailbox/get",
+            {
+              list: [
+                {
+                  id: "drafts/id",
+                  name: "Drafts",
+                  role: "drafts"
+                },
+                {
+                  id: "sent/id",
+                  name: "Sent",
+                  role: "sent"
+                }
+              ]
+            },
+            "send-mailboxes"
+          ]
+        ]
+      });
+    }
+
+    if (methodNames.includes("EmailSubmission/set")) {
+      return jsonResponse({
+        methodResponses: [
+          [
+            "Email/set",
+            failureType === "email"
+              ? {
+                notCreated: {
+                  "yumail-email": {
+                    type: "invalidProperties",
+                    description: "Invalid outgoing email."
+                  }
+                }
+              }
+              : {
+                created: {
+                  "yumail-email": {
+                    id: "sent-email-1",
+                    threadId: "thread-1"
+                  }
+                }
+              },
+            "create-outgoing-email"
+          ],
+          [
+            "EmailSubmission/set",
+            failureType === "submission"
+              ? {
+                notCreated: {
+                  "yumail-submission": {
+                    type: "forbiddenToSend",
+                    description: "Submission rejected."
+                  }
+                }
+              }
+              : {
+                created: {
+                  "yumail-submission": {
+                    id: "submission-1",
+                    emailId: "sent-email-1",
+                    threadId: "thread-1",
+                    sendAt: "2026-06-08T14:00:00.000Z"
+                  }
+                }
+              },
+            "submit-outgoing-email"
+          ]
+        ]
+      });
+    }
+
+    throw new Error(`Unexpected JMAP methods: ${methodNames.join(", ")}`);
+  };
+}
+
 test("creates JMAP session discovery candidates", () => {
   assert.deepEqual(createJmapSessionUrlCandidates("https://mail.example.com"), [
     "https://mail.example.com/.well-known/jmap",
@@ -290,4 +394,166 @@ test("fetches and normalizes JMAP message detail body parts and attachments", as
     sizeBytes: 2048,
     contentId: undefined
   });
+});
+
+test("creates and manually submits a JMAP email with reply metadata", async () => {
+  const requestLog = [];
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "Bearer token",
+    jmapAccountId: "accountA",
+    fetch: createSendFetchMock(requestLog)
+  });
+
+  const result = await provider.replyMessage({
+    accountId: "account:yu",
+    from: { name: "Yu", address: "yu@example.com" },
+    to: [{ name: "Ada", address: "ada@example.com" }],
+    cc: [{ address: "team@example.com" }],
+    bcc: [{ address: "audit@example.com" }],
+    subject: "Re: JMAP hello",
+    bodyText: "Thanks for the update.",
+    replyTo: {
+      messageId: "account:yu:message:email-1",
+      providerMessageId: "email-1",
+      providerThreadId: "thread-1",
+      messageIdHeader: "message@example.com",
+      references: ["root@example.com"]
+    }
+  });
+
+  const sendRequest = requestLog[1];
+  const emailSet = sendRequest.methodCalls[0][1];
+  const submissionSet = sendRequest.methodCalls[1][1];
+  const outgoingEmail = emailSet.create["yumail-email"];
+
+  assert.deepEqual(sendRequest.using, [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:ietf:params:jmap:submission"
+  ]);
+  assert.deepEqual(outgoingEmail.mailboxIds, { "drafts/id": true });
+  assert.deepEqual(outgoingEmail.keywords, { "$draft": true, "$seen": true });
+  assert.deepEqual(outgoingEmail.from, [{ name: "Yu", email: "yu@example.com" }]);
+  assert.deepEqual(outgoingEmail.to, [{ name: "Ada", email: "ada@example.com" }]);
+  assert.deepEqual(outgoingEmail.cc, [{ email: "team@example.com" }]);
+  assert.deepEqual(outgoingEmail.bcc, [{ email: "audit@example.com" }]);
+  assert.deepEqual(outgoingEmail.inReplyTo, ["message@example.com"]);
+  assert.deepEqual(outgoingEmail.references, [
+    "root@example.com",
+    "message@example.com"
+  ]);
+  assert.deepEqual(outgoingEmail.textBody, [{
+    partId: "yumail-text",
+    type: "text/plain"
+  }]);
+  assert.equal(outgoingEmail.bodyValues["yumail-text"].value, "Thanks for the update.");
+  assert.deepEqual(submissionSet.create["yumail-submission"], {
+    identityId: "identity-1",
+    emailId: "#yumail-email"
+  });
+  assert.deepEqual(submissionSet.onSuccessUpdateEmail["#yumail-submission"], {
+    "keywords/$draft": null,
+    "mailboxIds/sent~1id": true,
+    "mailboxIds/drafts~1id": null
+  });
+  assert.deepEqual(result, {
+    providerMessageId: "sent-email-1",
+    providerSubmissionId: "submission-1",
+    providerThreadId: "thread-1",
+    messageId: "account:yu:message:sent-email-1",
+    sentAt: "2026-06-08T14:00:00.000Z"
+  });
+});
+
+test("normalizes JMAP submission failures", async () => {
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "Bearer token",
+    fetch: createSendFetchMock([], "submission")
+  });
+
+  await assert.rejects(
+    provider.sendMessage({
+      accountId: "account:yu",
+      from: { address: "yu@example.com" },
+      to: [{ address: "ada@example.com" }],
+      subject: "Hello",
+      bodyText: "Manual send"
+    }),
+    (error) => {
+      assert.equal(error.code, "jmap_submission_failed");
+      assert.match(error.message, /Submission rejected/u);
+      return true;
+    }
+  );
+});
+
+test("rejects sending when the account lacks JMAP submission support", async () => {
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "Bearer token",
+    fetch: async (_url, init) => {
+      if (init?.method !== "GET") {
+        throw new Error("The provider must reject before issuing JMAP method calls.");
+      }
+
+      return jsonResponse({
+        ...sessionResponse,
+        accounts: {
+          accountA: {
+            ...sessionResponse.accounts.accountA,
+            accountCapabilities: {
+              "urn:ietf:params:jmap:mail": {}
+            }
+          }
+        }
+      });
+    }
+  });
+
+  await assert.rejects(
+    provider.sendMessage({
+      accountId: "account:yu",
+      from: { address: "yu@example.com" },
+      to: [{ address: "ada@example.com" }],
+      subject: "Hello",
+      bodyText: "Manual send"
+    }),
+    (error) => {
+      assert.equal(error.code, "jmap_submission_not_supported");
+      return true;
+    }
+  );
+});
+
+test("normalizes JMAP outgoing email creation failures", async () => {
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "Bearer token",
+    fetch: createSendFetchMock([], "email")
+  });
+
+  await assert.rejects(
+    provider.sendMessage({
+      accountId: "account:yu",
+      from: { address: "yu@example.com" },
+      to: [{ address: "ada@example.com" }],
+      subject: "Hello",
+      bodyText: "Manual send"
+    }),
+    (error) => {
+      assert.equal(error.code, "jmap_email_create_failed");
+      assert.match(error.message, /Invalid outgoing email/u);
+      return true;
+    }
+  );
 });

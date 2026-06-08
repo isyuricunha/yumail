@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Archive,
-  Bot,
   CheckCircle2,
   Clock3,
+  FilePenLine,
   FileText,
   ImageOff,
   Inbox,
@@ -17,16 +17,27 @@ import {
   Settings,
   Shield,
   Sparkles,
-  Tags
+  Tags,
+  Trash2,
+  Reply as ReplyIcon
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type {
   JmapAccountSetupInput,
   JmapConnectionTestResult,
-  MailAccountState
+  MailAccountState,
+  UpdateDraftInput
 } from "@yumail/core";
-import { createFoundationBootstrapState } from "@yumail/core";
-import type { Message, MessageDetail, Recipient } from "@yumail/mail";
+import {
+  createFoundationBootstrapState,
+  parseRecipientInput
+} from "@yumail/core";
+import type {
+  LocalDraft,
+  Message,
+  MessageDetail,
+  Recipient
+} from "@yumail/mail";
 import { createEmailRenderer, type RenderedEmail } from "@yumail/renderer";
 import {
   Button,
@@ -46,6 +57,15 @@ import {
 
 type ActiveView = "inbox" | "thread" | "compose" | "settings";
 type MessageDetailStatus = "idle" | "loading" | "ready" | "error";
+type DraftSaveStatus = "idle" | "saving" | "saved" | "sending" | "error";
+
+interface DraftEditorState {
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  bodyText: string;
+}
 
 interface NavigationItem {
   id: ActiveView;
@@ -65,6 +85,14 @@ const emptyMailState: MailAccountState = {
   inboxMessages: []
 };
 
+const emptyDraftEditor: DraftEditorState = {
+  to: "",
+  cc: "",
+  bcc: "",
+  subject: "",
+  bodyText: ""
+};
+
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>("inbox");
   const [mailState, setMailState] = useState<MailAccountState>(emptyMailState);
@@ -76,7 +104,14 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>();
   const [connectionTest, setConnectionTest] = useState<JmapConnectionTestResult>();
+  const [drafts, setDrafts] = useState<LocalDraft[]>([]);
+  const [activeDraft, setActiveDraft] = useState<LocalDraft>();
+  const [draftEditor, setDraftEditor] = useState<DraftEditorState>(emptyDraftEditor);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>("idle");
+  const [draftStatusMessage, setDraftStatusMessage] = useState<string>();
+  const [isDraftDirty, setIsDraftDirty] = useState(false);
   const messageDetailRequestId = useRef(0);
+  const draftSaveRequestId = useRef(0);
   const bootstrapState = useMemo(() => createFoundationBootstrapState(), []);
   const mailServices = useMemo(() => createDesktopMailServices(), []);
   const emailRenderer = useMemo(() => createEmailRenderer(window), []);
@@ -93,6 +128,18 @@ export function App() {
 
         setMailState(loadedState);
         setSelectedMessageId(loadedState.inboxMessages[0]?.id);
+        if (loadedState.accountConfig) {
+          return mailServices.composeService.listDrafts(
+            loadedState.accountConfig.account.id
+          );
+        }
+
+        return [];
+      })
+      .then((loadedDrafts) => {
+        if (isMounted) {
+          setDrafts(loadedDrafts ?? []);
+        }
       })
       .catch((error: unknown) => {
         if (isMounted) {
@@ -104,6 +151,38 @@ export function App() {
       isMounted = false;
     };
   }, [mailServices]);
+
+  useEffect(() => {
+    if (!activeDraft || !isDraftDirty) {
+      return;
+    }
+
+    const requestId = draftSaveRequestId.current + 1;
+    draftSaveRequestId.current = requestId;
+    setDraftSaveStatus("saving");
+    const timer = window.setTimeout(() => {
+      void saveDraftEditor(activeDraft.id, draftEditor)
+        .then((savedDraft) => {
+          if (draftSaveRequestId.current !== requestId) {
+            return;
+          }
+
+          replaceDraft(savedDraft);
+          setActiveDraft(savedDraft);
+          setIsDraftDirty(false);
+          setDraftSaveStatus("saved");
+          setDraftStatusMessage("Draft saved locally.");
+        })
+        .catch((error: unknown) => {
+          if (draftSaveRequestId.current === requestId) {
+            setDraftSaveStatus("error");
+            setDraftStatusMessage(getErrorMessage(error));
+          }
+        });
+    }, 650);
+
+    return () => window.clearTimeout(timer);
+  }, [activeDraft, draftEditor, isDraftDirty, mailServices]);
 
   async function runMailAction(action: () => Promise<void>) {
     setIsBusy(true);
@@ -129,10 +208,18 @@ export function App() {
   async function handleSaveAccount(input: JmapAccountSetupInput) {
     await runMailAction(async () => {
       const savedState = await mailServices.accountService.saveJmapAccount(input);
+      const savedDrafts = savedState.accountConfig
+        ? await mailServices.composeService.listDrafts(
+          savedState.accountConfig.account.id
+        )
+        : [];
       setMailState(savedState);
       setSelectedMessageId(savedState.inboxMessages[0]?.id);
       resetMessageDetail();
       setConnectionTest(undefined);
+      setDrafts(savedDrafts);
+      setActiveDraft(undefined);
+      setDraftEditor(emptyDraftEditor);
       setActiveView("inbox");
       setStatusMessage("JMAP account saved and inbox metadata loaded.");
     });
@@ -200,6 +287,187 @@ export function App() {
     }
   }
 
+  async function handleCreateDraft() {
+    const accountId = mailState.accountConfig?.account.id;
+
+    if (!accountId) {
+      setStatusMessage("Connect a JMAP account before composing.");
+      setActiveView("settings");
+      return;
+    }
+
+    try {
+      await persistActiveDraftIfNeeded();
+      const draft = await mailServices.composeService.createDraft({ accountId });
+      replaceDraft(draft);
+      openDraft(draft);
+      setDraftStatusMessage("New local draft.");
+    } catch (error) {
+      setDraftSaveStatus("error");
+      setDraftStatusMessage(getErrorMessage(error));
+      setActiveView("compose");
+    }
+  }
+
+  async function handleShowCompose() {
+    if (activeDraft) {
+      setActiveView("compose");
+      return;
+    }
+
+    if (drafts[0]) {
+      await handleOpenDraft(drafts[0]);
+      return;
+    }
+
+    await handleCreateDraft();
+  }
+
+  async function handleReply() {
+    if (!messageDetail) {
+      return;
+    }
+
+    try {
+      await persistActiveDraftIfNeeded();
+      const draft = await mailServices.composeService.createReplyDraft({
+        accountId: messageDetail.accountId,
+        providerMessageId: messageDetail.providerMessageId
+      });
+      replaceDraft(draft);
+      openDraft(draft);
+      setDraftStatusMessage("Reply draft saved locally.");
+    } catch (error) {
+      setMessageDetailError(getErrorMessage(error));
+      setMessageDetailStatus("error");
+    }
+  }
+
+  function openDraft(draft: LocalDraft) {
+    draftSaveRequestId.current += 1;
+    setActiveDraft(draft);
+    setDraftEditor(createDraftEditorState(draft));
+    setIsDraftDirty(false);
+    setDraftSaveStatus("saved");
+    setActiveView("compose");
+  }
+
+  async function handleOpenDraft(draft: LocalDraft) {
+    if (draft.id === activeDraft?.id) {
+      setActiveView("compose");
+      return;
+    }
+
+    try {
+      await persistActiveDraftIfNeeded();
+      openDraft(draft);
+    } catch (error) {
+      setDraftSaveStatus("error");
+      setDraftStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  function replaceDraft(draft: LocalDraft) {
+    setDrafts((currentDrafts) => [
+      draft,
+      ...currentDrafts.filter((candidate) => candidate.id !== draft.id)
+    ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+  }
+
+  function updateDraftEditor(field: keyof DraftEditorState, value: string) {
+    setDraftEditor((currentEditor) => ({
+      ...currentEditor,
+      [field]: value
+    }));
+    setIsDraftDirty(true);
+    setDraftStatusMessage(undefined);
+  }
+
+  function saveDraftEditor(draftId: string, editor: DraftEditorState) {
+    const input: UpdateDraftInput = {
+      draftId,
+      to: parseRecipientInput(editor.to),
+      cc: parseRecipientInput(editor.cc),
+      bcc: parseRecipientInput(editor.bcc),
+      subject: editor.subject,
+      bodyText: editor.bodyText
+    };
+
+    return mailServices.composeService.updateDraft(input);
+  }
+
+  async function persistActiveDraftIfNeeded() {
+    if (!activeDraft || !isDraftDirty) {
+      return;
+    }
+
+    draftSaveRequestId.current += 1;
+    setDraftSaveStatus("saving");
+    const savedDraft = await saveDraftEditor(activeDraft.id, draftEditor);
+    replaceDraft(savedDraft);
+    setActiveDraft(savedDraft);
+    setIsDraftDirty(false);
+    setDraftSaveStatus("saved");
+  }
+
+  async function handleSendDraft() {
+    if (!activeDraft || draftSaveStatus === "sending") {
+      return;
+    }
+
+    draftSaveRequestId.current += 1;
+    setIsDraftDirty(false);
+    setDraftSaveStatus("sending");
+    setDraftStatusMessage("Sending...");
+
+    try {
+      const savedDraft = await saveDraftEditor(activeDraft.id, draftEditor);
+      replaceDraft(savedDraft);
+      setActiveDraft(savedDraft);
+      setIsDraftDirty(false);
+      const result = await mailServices.composeService.sendDraft(savedDraft.id);
+      setDrafts((currentDrafts) => (
+        currentDrafts.filter((draft) => draft.id !== savedDraft.id)
+      ));
+      setActiveDraft(undefined);
+      setDraftEditor(emptyDraftEditor);
+      setDraftSaveStatus("saved");
+      setDraftStatusMessage(
+        `Message submitted at ${formatFullMessageDate(result.sentAt)}.`
+      );
+    } catch (error) {
+      setDraftSaveStatus("error");
+      setDraftStatusMessage(getErrorMessage(error));
+    }
+  }
+
+  async function handleDiscardDraft() {
+    if (!activeDraft) {
+      return;
+    }
+
+    const shouldDiscard = window.confirm("Discard this local draft?");
+
+    if (!shouldDiscard) {
+      return;
+    }
+
+    try {
+      draftSaveRequestId.current += 1;
+      await mailServices.composeService.discardDraft(activeDraft.id);
+      const remainingDrafts = drafts.filter((draft) => draft.id !== activeDraft.id);
+      setDrafts(remainingDrafts);
+      setActiveDraft(undefined);
+      setDraftEditor(emptyDraftEditor);
+      setIsDraftDirty(false);
+      setDraftSaveStatus("idle");
+      setDraftStatusMessage("Draft discarded.");
+    } catch (error) {
+      setDraftSaveStatus("error");
+      setDraftStatusMessage(getErrorMessage(error));
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="app-sidebar" aria-label="Main navigation">
@@ -211,7 +479,11 @@ export function App() {
           </div>
         </div>
 
-        <Button className="compose-button" variant="primary" onClick={() => setActiveView("compose")}>
+        <Button
+          className="compose-button"
+          variant="primary"
+          onClick={() => void handleCreateDraft()}
+        >
           <MailPlus size={16} aria-hidden="true" />
           Compose
         </Button>
@@ -226,7 +498,14 @@ export function App() {
                 key={item.id}
                 className={isActive ? "nav-item nav-item--active" : "nav-item"}
                 type="button"
-                onClick={() => setActiveView(item.id)}
+                onClick={() => {
+                  if (item.id === "compose") {
+                    void handleShowCompose();
+                    return;
+                  }
+
+                  setActiveView(item.id);
+                }}
               >
                 <Icon size={16} aria-hidden="true" />
                 <span>{item.label}</span>
@@ -269,17 +548,39 @@ export function App() {
             onOpenThread={(message) => void handleOpenThread(message)}
             onRefresh={handleRefreshInbox}
           />
-          <ThreadScreen
-            activeView={activeView}
-            selectedMessage={selectedMessage}
-            messageDetail={messageDetail}
-            renderedEmail={renderedEmail}
-            status={messageDetailStatus}
-            errorMessage={messageDetailError}
-          />
+          {activeView === "compose" ? (
+            <ComposeScreen
+              accountEmailAddress={mailState.accountConfig?.account.emailAddress}
+              draft={activeDraft}
+              editor={draftEditor}
+              saveStatus={draftSaveStatus}
+              statusMessage={draftStatusMessage}
+              onChange={updateDraftEditor}
+              onCreate={() => void handleCreateDraft()}
+              onDiscard={() => void handleDiscardDraft()}
+              onSend={() => void handleSendDraft()}
+            />
+          ) : (
+            <ThreadScreen
+              activeView={activeView}
+              selectedMessage={selectedMessage}
+              messageDetail={messageDetail}
+              renderedEmail={renderedEmail}
+              status={messageDetailStatus}
+              errorMessage={messageDetailError}
+              onReply={() => void handleReply()}
+            />
+          )}
           <aside className="detail-rail">
             {activeView === "compose" ? (
-              <ComposeScreen />
+              <DraftsPanel
+                drafts={drafts}
+                activeDraftId={activeDraft?.id}
+                statusMessage={draftStatusMessage}
+                status={draftSaveStatus}
+                onCreate={() => void handleCreateDraft()}
+                onOpen={(draft) => void handleOpenDraft(draft)}
+              />
             ) : (
               <SettingsScreen
                 isBusy={isBusy}
@@ -387,7 +688,8 @@ function ThreadScreen({
   messageDetail,
   renderedEmail,
   status,
-  errorMessage
+  errorMessage,
+  onReply
 }: {
   activeView: ActiveView;
   selectedMessage?: Message;
@@ -395,6 +697,7 @@ function ThreadScreen({
   renderedEmail?: RenderedEmail;
   status: MessageDetailStatus;
   errorMessage?: string;
+  onReply: () => void;
 }) {
   const visibleMessage = messageDetail ?? selectedMessage;
 
@@ -412,6 +715,14 @@ function ThreadScreen({
           </Typography>
         </div>
         <div className="toolbar-actions">
+          <IconButton
+            label="Reply"
+            variant="ghost"
+            disabled={status !== "ready" || !messageDetail}
+            onClick={onReply}
+          >
+            <ReplyIcon size={16} aria-hidden="true" />
+          </IconButton>
           <IconButton label="Summarize" variant="ghost" disabled>
             <Sparkles size={16} aria-hidden="true" />
           </IconButton>
@@ -560,31 +871,212 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ComposeScreen() {
+function ComposeScreen({
+  accountEmailAddress,
+  draft,
+  editor,
+  saveStatus,
+  statusMessage,
+  onChange,
+  onCreate,
+  onDiscard,
+  onSend
+}: {
+  accountEmailAddress?: string;
+  draft?: LocalDraft;
+  editor: DraftEditorState;
+  saveStatus: DraftSaveStatus;
+  statusMessage?: string;
+  onChange: (field: keyof DraftEditorState, value: string) => void;
+  onCreate: () => void;
+  onDiscard: () => void;
+  onSend: () => void;
+}) {
+  if (!draft) {
+    return (
+      <Surface className="compose-panel">
+        <div className="thread-empty">
+          <FilePenLine size={28} aria-hidden="true" />
+          <Typography variant="heading">
+            {statusMessage ?? "No local draft selected"}
+          </Typography>
+          <Typography variant="body" muted>
+            {accountEmailAddress
+              ? "Create a message or open a saved local draft."
+              : "Connect a JMAP account before composing."}
+          </Typography>
+          <Button
+            variant="primary"
+            disabled={!accountEmailAddress}
+            onClick={onCreate}
+          >
+            <MailPlus size={16} aria-hidden="true" />
+            New message
+          </Button>
+        </div>
+      </Surface>
+    );
+  }
+
+  const isSending = saveStatus === "sending";
+
+  return (
+    <Surface className="compose-panel">
+      <div className="compose-heading">
+        <div>
+          <Typography as="h2" variant="title">
+            {draft.mode === "reply" ? "Reply" : "New message"}
+          </Typography>
+          <Typography variant="caption" muted>
+            From {accountEmailAddress}
+          </Typography>
+        </div>
+        <Tag tone={saveStatus === "error" ? "warning" : "neutral"}>
+          {formatDraftSaveStatus(saveStatus)}
+        </Tag>
+      </div>
+
+      <form className="compose-editor" onSubmit={(event) => event.preventDefault()}>
+        <label className="compose-field">
+          <span>To</span>
+          <Input
+            value={editor.to}
+            onChange={(event) => onChange("to", event.target.value)}
+            placeholder="recipient@example.com"
+            disabled={isSending}
+          />
+        </label>
+        <div className="compose-recipient-row">
+          <label className="compose-field">
+            <span>Cc</span>
+            <Input
+              value={editor.cc}
+              onChange={(event) => onChange("cc", event.target.value)}
+              placeholder="Optional"
+              disabled={isSending}
+            />
+          </label>
+          <label className="compose-field">
+            <span>Bcc</span>
+            <Input
+              value={editor.bcc}
+              onChange={(event) => onChange("bcc", event.target.value)}
+              placeholder="Optional"
+              disabled={isSending}
+            />
+          </label>
+        </div>
+        <label className="compose-field compose-subject-field">
+          <span>Subject</span>
+          <Input
+            value={editor.subject}
+            onChange={(event) => onChange("subject", event.target.value)}
+            placeholder="Subject"
+            disabled={isSending}
+          />
+        </label>
+        <Textarea
+          className="compose-body"
+          value={editor.bodyText}
+          onChange={(event) => onChange("bodyText", event.target.value)}
+          placeholder="Write your message"
+          aria-label="Message body"
+          disabled={isSending}
+        />
+      </form>
+
+      <div className="compose-footer">
+        <div className="compose-status" role={saveStatus === "error" ? "alert" : "status"}>
+          <Typography variant="caption" muted={saveStatus !== "error"}>
+            {statusMessage ?? "Saved locally. Sending always requires clicking Send."}
+          </Typography>
+        </div>
+        <div className="compose-actions">
+          <Button variant="danger" disabled={isSending} onClick={onDiscard}>
+            <Trash2 size={15} aria-hidden="true" />
+            Discard
+          </Button>
+          <Button variant="primary" disabled={isSending} onClick={onSend}>
+            <Send size={15} aria-hidden="true" />
+            {isSending ? "Sending" : "Send"}
+          </Button>
+        </div>
+      </div>
+    </Surface>
+  );
+}
+
+function DraftsPanel({
+  drafts,
+  activeDraftId,
+  statusMessage,
+  status,
+  onCreate,
+  onOpen
+}: {
+  drafts: LocalDraft[];
+  activeDraftId?: string;
+  statusMessage?: string;
+  status: DraftSaveStatus;
+  onCreate: () => void;
+  onOpen: (draft: LocalDraft) => void;
+}) {
   return (
     <Surface className="rail-panel" tone="elevated">
       <div className="panel-heading">
         <div>
-          <Typography as="h2" variant="heading">Compose</Typography>
-          <Typography variant="caption" muted>Drafting remains deferred</Typography>
+          <Typography as="h2" variant="heading">Local drafts</Typography>
+          <Typography variant="caption" muted>
+            {drafts.length} saved on this device
+          </Typography>
         </div>
-        <Send size={16} aria-hidden="true" />
+        <IconButton label="New message" variant="ghost" size="sm" onClick={onCreate}>
+          <MailPlus size={15} aria-hidden="true" />
+        </IconButton>
       </div>
 
-      <div className="compose-form">
-        <Input placeholder="To" aria-label="To" disabled />
-        <Input placeholder="Subject" aria-label="Subject" disabled />
-        <Textarea placeholder="Write a draft" aria-label="Draft body" disabled />
-        <div className="compose-actions">
-          <Button variant="secondary" disabled>
-            <Bot size={15} aria-hidden="true" />
-            Improve
-          </Button>
-          <Button variant="primary" disabled>
-            <Send size={15} aria-hidden="true" />
-            Send
-          </Button>
-        </div>
+      <div className="draft-list">
+        {drafts.length === 0 ? (
+          <div className="draft-list-empty">
+            <FilePenLine size={22} aria-hidden="true" />
+            <Typography variant="small" muted>No saved drafts</Typography>
+          </div>
+        ) : null}
+        {drafts.map((draft) => (
+          <button
+            key={draft.id}
+            className={
+              draft.id === activeDraftId
+                ? "draft-row draft-row--active"
+                : "draft-row"
+            }
+            type="button"
+            onClick={() => onOpen(draft)}
+          >
+            <div className="draft-row-heading">
+              <Typography variant="small">
+                {draft.subject || "(no subject)"}
+              </Typography>
+              <Tag tone={draft.mode === "reply" ? "accent" : "neutral"}>
+                {draft.mode}
+              </Tag>
+            </div>
+            <Typography variant="caption" muted>
+              {formatDraftRecipients(draft)}
+            </Typography>
+            <Typography variant="caption" muted>
+              {formatMessageDate(draft.updatedAt)}
+            </Typography>
+          </button>
+        ))}
+      </div>
+
+      <div className="draft-rail-status">
+        <StatusRow
+          icon={status === "error" ? AlertCircle : CheckCircle2}
+          label={statusMessage ?? "Drafts are stored only in local SQLite."}
+          muted={status !== "error"}
+        />
       </div>
     </Surface>
   );
@@ -806,6 +1298,42 @@ function formatRecipients(recipients: Recipient[]): string {
   return recipients.length > 0
     ? recipients.map(formatRecipient).join(", ")
     : "Not provided";
+}
+
+function createDraftEditorState(draft: LocalDraft): DraftEditorState {
+  return {
+    to: formatRecipientInput(draft.to),
+    cc: formatRecipientInput(draft.cc),
+    bcc: formatRecipientInput(draft.bcc),
+    subject: draft.subject,
+    bodyText: draft.bodyText
+  };
+}
+
+function formatRecipientInput(recipients: Recipient[]): string {
+  return recipients.map(formatRecipient).join(", ");
+}
+
+function formatDraftRecipients(draft: LocalDraft): string {
+  const recipients = [...draft.to, ...draft.cc, ...draft.bcc];
+  return recipients.length > 0
+    ? recipients.map((recipient) => recipient.address).join(", ")
+    : "No recipients";
+}
+
+function formatDraftSaveStatus(status: DraftSaveStatus): string {
+  switch (status) {
+    case "saving":
+      return "Saving";
+    case "saved":
+      return "Saved locally";
+    case "sending":
+      return "Sending";
+    case "error":
+      return "Needs attention";
+    default:
+      return "Local draft";
+  }
 }
 
 function formatFileSize(sizeBytes: number): string {

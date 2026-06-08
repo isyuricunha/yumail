@@ -123,6 +123,12 @@ fn database_migrations() -> Vec<Migration> {
             sql: include_str!("../../../../packages/db/migrations/0003_jmap_account_configs.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "local_drafts",
+            sql: include_str!("../../../../packages/db/migrations/0004_local_drafts.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -138,7 +144,7 @@ mod tests {
             .map(|migration| migration.version)
             .collect::<Vec<_>>();
 
-        assert_eq!(versions, vec![1, 2, 3]);
+        assert_eq!(versions, vec![1, 2, 3, 4]);
         assert!(migrations.iter().all(|migration| !migration.sql.is_empty()));
     }
 
