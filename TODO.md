@@ -137,7 +137,24 @@
   test, save, and diagnostic controls in Settings.
 - [x] Keep AI HTTP construction and secret lookup outside React.
 - [x] Add URL, request, response, persistence, secret-leak, and service-flow tests.
-- [x] Keep all email AI actions disabled and unimplemented.
+- [x] Keep email AI actions disabled during the provider-settings milestone.
+
+## Milestone 5A - Manual Thread Summary
+
+- [x] Add a versioned `summarize-thread` prompt definition and output normalizer.
+- [x] Treat all email content as untrusted in the system prompt.
+- [x] Project subject, sender, To/Cc, date, visible text, and safe attachment metadata.
+- [x] Exclude raw HTML, remote images, Bcc, attachment contents, provider blob ids, and
+  credentials.
+- [x] Add structured OpenAI-compatible summary completion support.
+- [x] Add `ThreadSummaryService` for privacy review, cache lookup, secure key lookup,
+  provider execution, validation, and persistence.
+- [x] Add migration 0008 and `SqliteAiSummaryRepository`.
+- [x] Load cached summaries when reopening a message without calling the provider.
+- [x] Add manual Summarize, privacy review, loading, error, cached result, and regenerate
+  states to the reading panel.
+- [x] Test prompt metadata/input, prompt injection defense, request construction,
+  cache behavior, SQLite persistence, and secret leakage.
 
 ## Discovered Follow-ups
 
@@ -163,5 +180,8 @@
 - [ ] Add an optional JMAP Basic Auth username override if a server requires a username
   different from the email address.
 - [ ] Verify AI provider setup against a live OpenAI-compatible endpoint on Windows.
-- [ ] Add versioned prompt definitions with the first user-triggered AI action.
+- [ ] Verify manual summary generation against a live OpenAI-compatible endpoint on
+  Windows.
+- [ ] Add provider-backed multi-message thread assembly before whole-thread AI context.
+- [ ] Add user-facing AI artifact cache deletion controls.
 - [ ] Add custom provider headers only when required by a verified endpoint.

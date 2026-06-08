@@ -1,15 +1,22 @@
 import {
   OpenAiCompatibleProvider,
-  normalizeOpenAiCompatibleBaseUrl
+  createSummarizeThreadPromptInput,
+  formatThreadSummary,
+  normalizeOpenAiCompatibleBaseUrl,
+  summarizeThreadPrompt
 } from "@yumail/ai";
 import type {
   AiActions,
   AiConnectionDiagnostics,
   AiProviderAuthMode,
-  AiProviderConfiguration
+  AiProviderConfiguration,
+  AiSummaryRecord,
+  ThreadSummary
 } from "@yumail/ai";
 import type {
   AiProviderRepository,
+  AiSummaryCacheKey,
+  AiSummaryRepository,
   MailMetadataRepository,
   ProviderSyncState,
   StoredJmapAccountConfig
@@ -131,6 +138,35 @@ export interface CreateAiProviderSettingsServiceInput {
   fetch?: typeof fetch;
 }
 
+export interface SummaryPrivacyReview {
+  included: string[];
+  excluded: string[];
+}
+
+export interface ThreadSummaryResult {
+  summary: ThreadSummary;
+  record: AiSummaryRecord;
+  source: "cache" | "provider";
+}
+
+export interface SummarizeMessageInput {
+  messageDetail: MessageDetail;
+  forceRefresh?: boolean;
+}
+
+export interface ThreadSummaryService {
+  getPrivacyReview(messageDetail: MessageDetail): SummaryPrivacyReview;
+  loadCachedSummary(messageDetail: MessageDetail): Promise<ThreadSummaryResult | undefined>;
+  summarizeThread(input: SummarizeMessageInput): Promise<ThreadSummaryResult>;
+}
+
+export interface CreateThreadSummaryServiceInput {
+  providerRepository: AiProviderRepository;
+  summaryRepository: AiSummaryRepository;
+  secretStorage: SecretStorageAdapter;
+  fetch?: typeof fetch;
+}
+
 export interface LoadMessageDetailInput extends GetMessageInput {
   forceRefresh?: boolean;
 }
@@ -199,6 +235,12 @@ export function createAiProviderSettingsService(
   input: CreateAiProviderSettingsServiceInput
 ): AiProviderSettingsService {
   return new DefaultAiProviderSettingsService(input);
+}
+
+export function createThreadSummaryService(
+  input: CreateThreadSummaryServiceInput
+): ThreadSummaryService {
+  return new DefaultThreadSummaryService(input);
 }
 
 export function parseRecipientInput(value: string): Recipient[] {
@@ -644,6 +686,206 @@ class DefaultAiProviderSettingsService implements AiProviderSettingsService {
     }
 
     return storedApiKey;
+  }
+}
+
+class DefaultThreadSummaryService implements ThreadSummaryService {
+  private readonly providerRepository: AiProviderRepository;
+  private readonly summaryRepository: AiSummaryRepository;
+  private readonly secretStorage: SecretStorageAdapter;
+  private readonly provider: OpenAiCompatibleProvider;
+
+  constructor(input: CreateThreadSummaryServiceInput) {
+    this.providerRepository = input.providerRepository;
+    this.summaryRepository = input.summaryRepository;
+    this.secretStorage = input.secretStorage;
+    this.provider = new OpenAiCompatibleProvider(input.fetch);
+  }
+
+  getPrivacyReview(messageDetail: MessageDetail): SummaryPrivacyReview {
+    const bodyDescription = messageDetail.bodyText?.trim()
+      ? "Visible plain-text message body"
+      : "Visible message snippet because no plain-text body is available";
+
+    return {
+      included: [
+        "Subject, sender, To/Cc recipients, and message date",
+        bodyDescription,
+        messageDetail.attachments.length > 0
+          ? `File name, content type, and size for ${messageDetail.attachments.length} attachment${messageDetail.attachments.length === 1 ? "" : "s"}`
+          : "No attachment metadata because this message has no attachments"
+      ],
+      excluded: [
+        "Raw or hidden HTML",
+        "Bcc recipients and provider/internal identifiers",
+        "Remote images and tracking resources",
+        "Attachment contents",
+        "Mail and AI credentials"
+      ]
+    };
+  }
+
+  async loadCachedSummary(
+    messageDetail: MessageDetail
+  ): Promise<ThreadSummaryResult | undefined> {
+    const configuration = await this.providerRepository.getDefaultAiProvider();
+
+    if (!configuration) {
+      return undefined;
+    }
+
+    const preparedSummary = await this.prepareSummary(messageDetail, configuration);
+    const record = await this.summaryRepository.getCachedSummary(preparedSummary.cacheKey);
+
+    return record
+      ? {
+        summary: record.summary,
+        record,
+        source: "cache"
+      }
+      : undefined;
+  }
+
+  async summarizeThread(input: SummarizeMessageInput): Promise<ThreadSummaryResult> {
+    const configuration = await this.requireEnabledProvider();
+    const preparedSummary = await this.prepareSummary(input.messageDetail, configuration);
+    const cachedRecord = await this.summaryRepository.getCachedSummary(
+      preparedSummary.cacheKey
+    );
+
+    if (cachedRecord && !input.forceRefresh) {
+      return {
+        summary: cachedRecord.summary,
+        record: cachedRecord,
+        source: "cache"
+      };
+    }
+
+    const apiKey = await this.resolveApiKey(configuration);
+    const completion = await this.provider.createStructuredCompletion({
+      configuration,
+      apiKey,
+      systemPrompt: summarizeThreadPrompt.systemPrompt,
+      userPrompt: preparedSummary.userPrompt,
+      temperature: configuration.temperature,
+      maxTokens: configuration.maxTokens
+    });
+
+    if (!completion.ok || !completion.content) {
+      throw new YuMailError({
+        code: "ai_summary_failed",
+        message: completion.diagnostics.message
+      });
+    }
+
+    let summary: ThreadSummary;
+
+    try {
+      summary = summarizeThreadPrompt.parseOutput(completion.content);
+    } catch {
+      throw new YuMailError({
+        code: "ai_summary_invalid_response",
+        message: "The AI endpoint returned a summary that YuMail could not validate."
+      });
+    }
+
+    const now = toIsoDateTime();
+    const record: AiSummaryRecord = {
+      id: createStableEntityId("ai-summary", [
+        input.messageDetail.accountId,
+        input.messageDetail.id,
+        configuration.id,
+        configuration.model,
+        summarizeThreadPrompt.id,
+        summarizeThreadPrompt.version,
+        preparedSummary.inputHash
+      ]),
+      accountId: input.messageDetail.accountId,
+      messageId: input.messageDetail.id,
+      providerId: configuration.id,
+      model: configuration.model,
+      promptId: summarizeThreadPrompt.id,
+      promptVersion: summarizeThreadPrompt.version,
+      inputHash: preparedSummary.inputHash,
+      summary,
+      summaryText: formatThreadSummary(summary),
+      createdAt: cachedRecord?.createdAt ?? now,
+      updatedAt: now
+    };
+
+    await this.summaryRepository.saveSummary(record);
+
+    return {
+      summary,
+      record,
+      source: "provider"
+    };
+  }
+
+  private async prepareSummary(
+    messageDetail: MessageDetail,
+    configuration: AiProviderConfiguration
+  ): Promise<{
+    cacheKey: AiSummaryCacheKey;
+    inputHash: string;
+    userPrompt: string;
+  }> {
+    const promptInput = createSummarizeThreadPromptInput(messageDetail);
+    const userPrompt = summarizeThreadPrompt.buildUserPrompt(promptInput);
+    const inputHash = await createSha256Hash(userPrompt);
+
+    return {
+      cacheKey: {
+        accountId: messageDetail.accountId,
+        messageId: messageDetail.id,
+        providerId: configuration.id,
+        model: configuration.model,
+        promptId: summarizeThreadPrompt.id,
+        promptVersion: summarizeThreadPrompt.version,
+        inputHash
+      },
+      inputHash,
+      userPrompt
+    };
+  }
+
+  private async requireEnabledProvider(): Promise<AiProviderConfiguration> {
+    const configuration = await this.providerRepository.getDefaultAiProvider();
+
+    if (!configuration) {
+      throw new YuMailError({
+        code: "ai_provider_not_configured",
+        message: "Configure a default AI provider in Settings before summarizing."
+      });
+    }
+
+    if (!configuration.enabled) {
+      throw new YuMailError({
+        code: "ai_provider_disabled",
+        message: "Enable the default AI provider in Settings before summarizing."
+      });
+    }
+
+    return configuration;
+  }
+
+  private async resolveApiKey(
+    configuration: AiProviderConfiguration
+  ): Promise<string | undefined> {
+    if (configuration.authMode === "none") {
+      return undefined;
+    }
+
+    const apiKey = await this.secretStorage.getSecret(configuration.credentialReference);
+
+    if (!apiKey) {
+      throw new YuMailError({
+        code: "missing_ai_api_key",
+        message: "The AI provider API key is missing from secure storage."
+      });
+    }
+
+    return apiKey;
   }
 }
 
@@ -1116,6 +1358,17 @@ function isValidEmailAddress(value: string): boolean {
 
 function normalizeJmapAccountAuthMode(value: JmapAuthMode | undefined): JmapAuthMode {
   return value === "bearer" ? "bearer" : "basic";
+}
+
+async function createSha256Hash(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value)
+  );
+
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function isJmapConnectionDiagnostics(value: unknown): value is JmapConnectionDiagnostics {

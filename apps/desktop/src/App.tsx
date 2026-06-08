@@ -29,6 +29,8 @@ import type {
   JmapAccountSetupInput,
   JmapConnectionTestResult,
   MailAccountState,
+  SummaryPrivacyReview,
+  ThreadSummaryResult,
   UpdateDraftInput
 } from "@yumail/core";
 import {
@@ -62,6 +64,13 @@ import {
 type ActiveView = "inbox" | "thread" | "compose" | "settings";
 type MessageDetailStatus = "idle" | "loading" | "ready" | "error";
 type DraftSaveStatus = "idle" | "saving" | "saved" | "sending" | "error";
+type ThreadSummaryStatus =
+  | "idle"
+  | "checking-cache"
+  | "privacy-review"
+  | "loading"
+  | "ready"
+  | "error";
 
 interface DraftEditorState {
   to: string;
@@ -107,6 +116,13 @@ export function App() {
   const [renderedEmail, setRenderedEmail] = useState<RenderedEmail>();
   const [messageDetailStatus, setMessageDetailStatus] = useState<MessageDetailStatus>("idle");
   const [messageDetailError, setMessageDetailError] = useState<string>();
+  const [threadSummaryStatus, setThreadSummaryStatus] =
+    useState<ThreadSummaryStatus>("idle");
+  const [threadSummaryResult, setThreadSummaryResult] = useState<ThreadSummaryResult>();
+  const [threadSummaryError, setThreadSummaryError] = useState<string>();
+  const [summaryPrivacyReview, setSummaryPrivacyReview] =
+    useState<SummaryPrivacyReview>();
+  const [regenerateSummary, setRegenerateSummary] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>();
   const [connectionTest, setConnectionTest] = useState<JmapConnectionTestResult>();
@@ -122,6 +138,7 @@ export function App() {
   const [draftStatusMessage, setDraftStatusMessage] = useState<string>();
   const [isDraftDirty, setIsDraftDirty] = useState(false);
   const messageDetailRequestId = useRef(0);
+  const threadSummaryRequestId = useRef(0);
   const draftSaveRequestId = useRef(0);
   const bootstrapState = useMemo(() => createFoundationBootstrapState(), []);
   const mailServices = useMemo(() => createDesktopMailServices(), []);
@@ -288,17 +305,34 @@ export function App() {
     setRenderedEmail(undefined);
     setMessageDetailError(undefined);
     setMessageDetailStatus("idle");
+    resetThreadSummary();
+  }
+
+  function resetThreadSummary() {
+    threadSummaryRequestId.current += 1;
+    setThreadSummaryStatus("idle");
+    setThreadSummaryResult(undefined);
+    setThreadSummaryError(undefined);
+    setSummaryPrivacyReview(undefined);
+    setRegenerateSummary(false);
   }
 
   async function handleOpenThread(message: Message) {
     const requestId = messageDetailRequestId.current + 1;
     messageDetailRequestId.current = requestId;
+    const summaryRequestId = threadSummaryRequestId.current + 1;
+    threadSummaryRequestId.current = summaryRequestId;
     setSelectedMessageId(message.id);
     setActiveView("thread");
     setMessageDetail(undefined);
     setRenderedEmail(undefined);
     setMessageDetailError(undefined);
     setMessageDetailStatus("loading");
+    setThreadSummaryStatus("idle");
+    setThreadSummaryResult(undefined);
+    setThreadSummaryError(undefined);
+    setSummaryPrivacyReview(undefined);
+    setRegenerateSummary(false);
 
     try {
       const result = await mailServices.threadReadingService.loadMessageDetail({
@@ -322,6 +356,27 @@ export function App() {
       setMessageDetail(detail);
       setRenderedEmail(rendered);
       setMessageDetailStatus("ready");
+      setThreadSummaryStatus("checking-cache");
+
+      try {
+        const cachedSummary = await mailServices.threadSummaryService.loadCachedSummary(
+          detail
+        );
+
+        if (
+          messageDetailRequestId.current !== requestId
+          || threadSummaryRequestId.current !== summaryRequestId
+        ) {
+          return;
+        }
+
+        setThreadSummaryResult(cachedSummary);
+        setThreadSummaryStatus(cachedSummary ? "ready" : "idle");
+      } catch {
+        if (threadSummaryRequestId.current === summaryRequestId) {
+          setThreadSummaryStatus("idle");
+        }
+      }
     } catch (error) {
       if (messageDetailRequestId.current !== requestId) {
         return;
@@ -329,6 +384,59 @@ export function App() {
 
       setMessageDetailError(getErrorMessage(error));
       setMessageDetailStatus("error");
+    }
+  }
+
+  function handleReviewSummary(forceRefresh: boolean) {
+    if (!messageDetail) {
+      return;
+    }
+
+    setSummaryPrivacyReview(
+      mailServices.threadSummaryService.getPrivacyReview(messageDetail)
+    );
+    setRegenerateSummary(forceRefresh);
+    setThreadSummaryError(undefined);
+    setThreadSummaryStatus("privacy-review");
+  }
+
+  function handleCancelSummaryReview() {
+    setSummaryPrivacyReview(undefined);
+    setRegenerateSummary(false);
+    setThreadSummaryStatus(threadSummaryResult ? "ready" : "idle");
+  }
+
+  async function handleConfirmSummary() {
+    if (!messageDetail) {
+      return;
+    }
+
+    const requestId = threadSummaryRequestId.current + 1;
+    threadSummaryRequestId.current = requestId;
+    setThreadSummaryStatus("loading");
+    setThreadSummaryError(undefined);
+    setSummaryPrivacyReview(undefined);
+
+    try {
+      const result = await mailServices.threadSummaryService.summarizeThread({
+        messageDetail,
+        forceRefresh: regenerateSummary
+      });
+
+      if (threadSummaryRequestId.current !== requestId) {
+        return;
+      }
+
+      setThreadSummaryResult(result);
+      setRegenerateSummary(false);
+      setThreadSummaryStatus("ready");
+    } catch (error) {
+      if (threadSummaryRequestId.current !== requestId) {
+        return;
+      }
+
+      setThreadSummaryError(getErrorMessage(error));
+      setThreadSummaryStatus("error");
     }
   }
 
@@ -628,7 +736,15 @@ export function App() {
               renderedEmail={renderedEmail}
               status={messageDetailStatus}
               errorMessage={messageDetailError}
+              summaryStatus={threadSummaryStatus}
+              summaryResult={threadSummaryResult}
+              summaryError={threadSummaryError}
+              summaryPrivacyReview={summaryPrivacyReview}
               onReply={() => void handleReply()}
+              onSummarize={() => handleReviewSummary(false)}
+              onRegenerateSummary={() => handleReviewSummary(true)}
+              onCancelSummaryReview={handleCancelSummaryReview}
+              onConfirmSummary={() => void handleConfirmSummary()}
             />
           )}
           <aside className="detail-rail">
@@ -754,7 +870,15 @@ function ThreadScreen({
   renderedEmail,
   status,
   errorMessage,
-  onReply
+  summaryStatus,
+  summaryResult,
+  summaryError,
+  summaryPrivacyReview,
+  onReply,
+  onSummarize,
+  onRegenerateSummary,
+  onCancelSummaryReview,
+  onConfirmSummary
 }: {
   activeView: ActiveView;
   selectedMessage?: Message;
@@ -762,7 +886,15 @@ function ThreadScreen({
   renderedEmail?: RenderedEmail;
   status: MessageDetailStatus;
   errorMessage?: string;
+  summaryStatus: ThreadSummaryStatus;
+  summaryResult?: ThreadSummaryResult;
+  summaryError?: string;
+  summaryPrivacyReview?: SummaryPrivacyReview;
   onReply: () => void;
+  onSummarize: () => void;
+  onRegenerateSummary: () => void;
+  onCancelSummaryReview: () => void;
+  onConfirmSummary: () => void;
 }) {
   const visibleMessage = messageDetail ?? selectedMessage;
 
@@ -788,7 +920,17 @@ function ThreadScreen({
           >
             <ReplyIcon size={16} aria-hidden="true" />
           </IconButton>
-          <IconButton label="Summarize" variant="ghost" disabled>
+          <IconButton
+            label="Summarize"
+            variant="ghost"
+            disabled={
+              status !== "ready"
+              || !messageDetail
+              || summaryStatus === "loading"
+              || summaryStatus === "checking-cache"
+            }
+            onClick={onSummarize}
+          >
             <Sparkles size={16} aria-hidden="true" />
           </IconButton>
           <IconButton label="Tag suggestions" variant="ghost" disabled>
@@ -800,7 +942,18 @@ function ThreadScreen({
       {status === "loading" ? <MessageLoadingState /> : null}
       {status === "error" ? <MessageErrorState message={errorMessage} /> : null}
       {status === "ready" && messageDetail && renderedEmail ? (
-        <MessageReadingView message={messageDetail} renderedEmail={renderedEmail} />
+        <MessageReadingView
+          message={messageDetail}
+          renderedEmail={renderedEmail}
+          summaryStatus={summaryStatus}
+          summaryResult={summaryResult}
+          summaryError={summaryError}
+          summaryPrivacyReview={summaryPrivacyReview}
+          onSummarize={onSummarize}
+          onRegenerateSummary={onRegenerateSummary}
+          onCancelSummaryReview={onCancelSummaryReview}
+          onConfirmSummary={onConfirmSummary}
+        />
       ) : null}
       {status === "idle" ? (
         <div className="thread-empty">
@@ -839,10 +992,26 @@ function MessageErrorState({ message }: { message?: string }) {
 
 function MessageReadingView({
   message,
-  renderedEmail
+  renderedEmail,
+  summaryStatus,
+  summaryResult,
+  summaryError,
+  summaryPrivacyReview,
+  onSummarize,
+  onRegenerateSummary,
+  onCancelSummaryReview,
+  onConfirmSummary
 }: {
   message: MessageDetail;
   renderedEmail: RenderedEmail;
+  summaryStatus: ThreadSummaryStatus;
+  summaryResult?: ThreadSummaryResult;
+  summaryError?: string;
+  summaryPrivacyReview?: SummaryPrivacyReview;
+  onSummarize: () => void;
+  onRegenerateSummary: () => void;
+  onCancelSummaryReview: () => void;
+  onConfirmSummary: () => void;
 }) {
   return (
     <article className="message-reading-view">
@@ -861,6 +1030,17 @@ function MessageReadingView({
           {message.isAnswered ? <Tag tone="success">Replied</Tag> : null}
         </div>
       </section>
+
+      <ThreadSummaryPanel
+        status={summaryStatus}
+        result={summaryResult}
+        errorMessage={summaryError}
+        privacyReview={summaryPrivacyReview}
+        onSummarize={onSummarize}
+        onRegenerate={onRegenerateSummary}
+        onCancelReview={onCancelSummaryReview}
+        onConfirm={onConfirmSummary}
+      />
 
       {renderedEmail.remoteImagesBlocked ? (
         <div className="remote-images-notice" role="status">
@@ -924,6 +1104,171 @@ function MessageReadingView({
         </section>
       ) : null}
     </article>
+  );
+}
+
+function ThreadSummaryPanel({
+  status,
+  result,
+  errorMessage,
+  privacyReview,
+  onSummarize,
+  onRegenerate,
+  onCancelReview,
+  onConfirm
+}: {
+  status: ThreadSummaryStatus;
+  result?: ThreadSummaryResult;
+  errorMessage?: string;
+  privacyReview?: SummaryPrivacyReview;
+  onSummarize: () => void;
+  onRegenerate: () => void;
+  onCancelReview: () => void;
+  onConfirm: () => void;
+}) {
+  if (status === "idle") {
+    return null;
+  }
+
+  if (status === "checking-cache") {
+    return (
+      <section className="summary-panel summary-panel--loading" aria-label="AI summary">
+        <Sparkles size={17} aria-hidden="true" />
+        <Typography variant="small" muted>Checking for a cached summary...</Typography>
+      </section>
+    );
+  }
+
+  if (status === "privacy-review" && privacyReview) {
+    return (
+      <section className="summary-panel summary-privacy-review" aria-label="AI privacy review">
+        <div className="summary-heading">
+          <div>
+            <Typography as="h3" variant="heading">Review AI data</Typography>
+            <Typography variant="caption" muted>
+              YuMail will send only this message projection after you confirm.
+            </Typography>
+          </div>
+          <Tag tone="warning">Manual action</Tag>
+        </div>
+        <div className="summary-review-grid">
+          <SummaryReviewList title="Included" items={privacyReview.included} />
+          <SummaryReviewList title="Excluded" items={privacyReview.excluded} />
+        </div>
+        <div className="summary-actions">
+          <Button size="sm" variant="ghost" onClick={onCancelReview}>Cancel</Button>
+          <Button size="sm" variant="primary" onClick={onConfirm}>
+            <Sparkles size={15} aria-hidden="true" />
+            Send to AI
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  if (status === "loading") {
+    return (
+      <section className="summary-panel summary-panel--loading" aria-live="polite">
+        <Sparkles size={17} aria-hidden="true" />
+        <div>
+          <Typography variant="small">Generating summary</Typography>
+          <Typography variant="caption" muted>
+            The configured provider is processing the approved message projection.
+          </Typography>
+        </div>
+      </section>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <section className="summary-panel summary-panel--error" role="alert">
+        <div className="summary-heading">
+          <div>
+            <Typography as="h3" variant="heading">Summary unavailable</Typography>
+            <Typography variant="caption" muted>
+              {errorMessage ?? "The configured AI provider could not create a summary."}
+            </Typography>
+          </div>
+          <AlertCircle size={18} aria-hidden="true" />
+        </div>
+        <div className="summary-actions">
+          <Button size="sm" variant="secondary" onClick={onSummarize}>
+            Review and retry
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  if (status !== "ready" || !result) {
+    return null;
+  }
+
+  return (
+    <section className="summary-panel" aria-label="AI summary">
+      <div className="summary-heading">
+        <div>
+          <Typography as="h3" variant="heading">AI summary</Typography>
+          <Typography variant="caption" muted>
+            {result.source === "cache" ? "Cached result" : "Generated now"}
+            {" · "}
+            {result.record.model}
+            {" · "}
+            prompt {result.record.promptVersion}
+          </Typography>
+        </div>
+        <Button size="sm" variant="ghost" onClick={onRegenerate}>
+          Regenerate
+        </Button>
+      </div>
+      <div className="summary-content">
+        <div>
+          <Typography variant="caption" muted>Main point</Typography>
+          <Typography variant="body">{result.summary.mainPoint}</Typography>
+        </div>
+        {result.summary.currentStatus ? (
+          <div>
+            <Typography variant="caption" muted>Current status</Typography>
+            <Typography variant="body">{result.summary.currentStatus}</Typography>
+          </div>
+        ) : null}
+        <SummaryResultList title="Decisions" items={result.summary.decisions} />
+        <SummaryResultList title="Action items" items={result.summary.actionItems} />
+        <SummaryResultList title="Deadlines" items={result.summary.deadlines} />
+        <SummaryResultList title="People involved" items={result.summary.peopleInvolved} />
+        <SummaryResultList
+          title="Attachment notes"
+          items={result.summary.attachmentNotes ?? []}
+        />
+      </div>
+    </section>
+  );
+}
+
+function SummaryReviewList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div>
+      <Typography variant="caption" muted>{title}</Typography>
+      <ul className="summary-list">
+        {items.map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function SummaryResultList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div>
+      <Typography variant="caption" muted>{title}</Typography>
+      <ul className="summary-list">
+        {items.map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </div>
   );
 }
 

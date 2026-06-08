@@ -79,6 +79,18 @@ Milestone 4 adds `AiProviderSettingsService`, which owns:
 React edits settings models and calls this service. It does not construct AI HTTP
 requests, open SQLite, or access the operating system credential manager.
 
+Milestone 5A adds `ThreadSummaryService`, which owns:
+
+- privacy-review metadata for the selected message.
+- prompt input projection and SHA-256 input hashing.
+- default provider and secure API-key lookup.
+- cache-first summary reads and explicit provider execution.
+- structured output validation and summary persistence.
+
+Opening a message may query the summary repository, but it never triggers an AI request.
+Only the confirmed `summarizeThread` service call can access the API key and provider.
+React displays service results and never builds prompts or AI HTTP payloads.
+
 ### `packages/mail`
 
 Owns normalized mail provider contracts.
@@ -153,6 +165,19 @@ The connection test never receives email content. Diagnostics omit response bodi
 request headers, and exception text so an endpoint cannot echo a secret into UI state or
 logs. Manual model entry remains available when `/models` is unsupported.
 
+Milestone 5A adds the versioned `summarize-thread` prompt (`1.0.0`) and structured
+completion support. The prompt template owns its id, version, system instruction, user
+payload builder, and output normalizer. Its system instruction treats email fields as
+untrusted data and forbids following embedded instructions or inferring attachment
+contents.
+
+The summary projection contains subject, sender, To/Cc recipients, date, visible
+plain-text body or snippet, and attachment filename/type/size. It never contains raw
+HTML, Bcc recipients, remote image URLs, attachment contents, provider attachment
+identifiers, credentials, or hidden renderer state. The provider requests a JSON object
+from `POST {baseUrl}/chat/completions`; response content is validated before it crosses
+into core persistence.
+
 Current action contracts:
 
 - `summarizeThread`
@@ -179,6 +204,7 @@ Repository ports are split by responsibility:
 - `DraftRepository`
 - `UserPreferenceRepository`
 - `AiProviderRepository`
+- `AiSummaryRepository`
 
 `MailMetadataRepository` composes the mail-related ports used by core services.
 `SqliteMailMetadataRepository` depends only on the small `SqlDatabase` port, so its
@@ -203,6 +229,13 @@ Milestone 4 adds migration 0007 and `SqliteAiProviderRepository`. The existing
 `ai_providers` table stores provider type, display name, normalized base URL, default
 model, generation defaults, auth mode, enabled/default flags, timestamps, and only an
 OS-credential reference. API-key values never enter SQLite.
+
+Milestone 5A adds migration 0008 and `SqliteAiSummaryRepository`. Summary rows are keyed
+by account/message plus provider, model, prompt id/version, and a hash of the exact
+privacy-safe prompt input. The row stores structured JSON and normalized display text,
+not the API key or raw prompt. Migration 0008 also registers the code-owned prompt
+id/version in `prompt_versions`. The current single-message reading path leaves
+`thread_id` null until provider-backed thread assembly supplies an internal thread row.
 
 Desktop runtime persistence uses `SqliteMailMetadataRepository` through the platform
 database adapter. React components do not open SQLite directly.
@@ -275,7 +308,7 @@ depend on WebView/browser CORS policy. Redirect policy and auth forwarding remai
 
 ### Desktop Database Initialization
 
-Rust registers migrations 0001 through 0007 with the SQL plugin for
+Rust registers migrations 0001 through 0008 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 

@@ -163,8 +163,11 @@ test("registers and applies every SQLite migration", async () => {
   const database = new DatabaseSync(":memory:");
   await applyRegisteredMigrations(database);
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 7);
-  assert.deepEqual(migrations.map((migration) => migration.version), [1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(INITIAL_SCHEMA_VERSION, 8);
+  assert.deepEqual(
+    migrations.map((migration) => migration.version),
+    [1, 2, 3, 4, 5, 6, 7, 8]
+  );
 
   const tables = database.prepare(`
     SELECT name

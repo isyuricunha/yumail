@@ -3,11 +3,11 @@
 YuMail is a desktop-first, privacy-first email client based on the repository PRD.
 The current implementation supports JMAP account setup, Inbox metadata loading, and a
 cache-first safe message reading path, local drafts, replies, manual JMAP submission,
-and secure custom OpenAI-compatible provider settings.
+secure custom OpenAI-compatible provider settings, and manual cached message summaries.
 
 This is not a complete mail client yet. Continuous sync, IMAP/SMTP, Gmail, Outlook,
-attachments in outgoing mail, provider-synced drafts, and email AI actions are
-intentionally deferred.
+attachments in outgoing mail, provider-synced drafts, and AI actions beyond manual
+summarization are intentionally deferred.
 
 ## Requirements
 
@@ -105,8 +105,8 @@ packages/
 - UI primitives: `Button`, `IconButton`, `Surface`, `Typography`, `Input`, `Textarea`, `Tag`/`Chip`, and `Skeleton`.
 - JMAP-backed Inbox, safe message reading, local drafts, reply, and compose screens.
 - JMAP read/submission provider and future IMAP/SMTP provider placeholder.
-- OpenAI-compatible AI provider settings, connection testing, and future action
-  interfaces.
+- OpenAI-compatible AI provider settings, connection testing, and manual message
+  summarization.
 - SQLite migrations for account metadata, message bodies, attachments, AI providers and artifacts,
   sync state, and preferences.
 - Runtime SQLite repositories through the official Tauri SQL plugin.
@@ -180,7 +180,7 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001 through 0007.
+- Rust registers migrations 0001 through 0008.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
   tags, body cache, attachments, local drafts, sync states, and preferences persist in
@@ -288,8 +288,39 @@ Diagnostics report attempted URLs, methods, HTTP status, auth-sent state, JSON v
 response-shape validity, final URL, and a safe error category. Response bodies,
 Authorization values, API keys, and raw network exception text are never included.
 
-Custom provider headers, OAuth, prompt execution, summaries, tags, action items, draft
-generation, writing-style analysis, and automatic/background AI remain deferred.
+Custom provider headers, OAuth, tags, action items, draft generation, writing-style
+analysis, and automatic/background AI remain deferred.
+
+## Manual AI Summaries
+
+Milestone 5A adds the first email AI action. Open a message and click Summarize. YuMail
+shows an explicit privacy review before any request and requires a second click on
+Send to AI.
+
+The approved request contains:
+
+- subject, sender, To/Cc recipients, and message date;
+- the visible plain-text body, or the cached snippet when no plain-text body exists;
+- attachment file name, content type, and available size.
+
+It excludes raw/hidden HTML, remote images, tracking resources, Bcc recipients,
+provider attachment identifiers, attachment contents, and credentials. HTML-only
+messages currently use the safe snippet rather than converting raw HTML for AI.
+
+The `summarize-thread` prompt is versioned as `1.0.0` and explicitly treats all email
+fields as untrusted data. The OpenAI-compatible request uses
+`POST {baseUrl}/chat/completions` with system/user messages and requests a JSON object.
+The result is validated before display or persistence.
+
+Migration 0008 stores summaries in `ai_summaries` with account/message, provider,
+model, prompt id/version, input hash, structured output, normalized summary text, and
+timestamps. Reopening a message queries this cache without retrieving the API key or
+calling the network. Regenerate repeats the privacy review and refreshes the matching
+cache record.
+
+The current reading path opens one normalized `MessageDetail`, so Milestone 5A
+summarizes that selected message and preserves provider thread context only in the mail
+model. Provider-backed multi-message thread assembly remains a later reading milestone.
 
 ## Windows/Stalwart Smoke Test
 

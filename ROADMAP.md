@@ -238,13 +238,36 @@ Acceptance:
 
 Remaining before AI actions:
 
-- Add concrete versioned prompt definitions when the first action is implemented.
 - Add custom non-secret header metadata only if a real compatible endpoint requires it.
 - Verify a live custom endpoint and Windows Credential Manager flow in the Tauri runtime.
 
+## Milestone 5A - Manual Thread Summary
+
+Status: implemented for the currently opened message.
+
+- Versioned `summarize-thread` prompt with structured output normalization.
+- Explicit prompt-injection defense for untrusted email content.
+- Privacy-safe projection of visible message text and attachment metadata.
+- First-use and regenerate privacy review before each provider request.
+- Default-provider and secure API-key resolution through `ThreadSummaryService`.
+- SQLite summary cache with provider/model/prompt/input-hash metadata.
+- Reading-panel loading, error, cached result, and regenerate states.
+
+Acceptance:
+
+- Opening a message can load a cached summary without contacting the provider.
+- A summary request runs only after explicit privacy confirmation.
+- Raw HTML, remote images, attachment contents, and secrets are excluded.
+
+Remaining hardening:
+
+- Verify summary generation against a live custom endpoint on Windows.
+- Add provider-backed multi-message thread assembly before claiming whole-thread
+  summarization.
+- Add user-facing AI cache deletion controls.
+
 ## Milestone 5 - AI Actions
 
-- Summarize thread.
 - Suggest tags.
 - Extract action items.
 - Draft reply.
