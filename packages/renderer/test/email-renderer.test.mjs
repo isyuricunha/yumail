@@ -15,8 +15,37 @@ test("renders plain text without interpreting HTML", async () => {
   });
 
   assert.equal(rendered.content, "<script>alert('no')</script>\nHello");
+  assert.deepEqual(rendered.plainTextLines, [
+    { content: "<script>alert('no')</script>", quoteDepth: 0 },
+    { content: "Hello", quoteDepth: 0 }
+  ]);
   assert.equal(rendered.mode, "plain-text");
   assert.equal(rendered.remoteImagesBlocked, false);
+});
+
+test("preserves plain-text line breaks and identifies quoted reply lines", async () => {
+  const bodyText = [
+    "Hello,",
+    "",
+    "> Previous reply",
+    ">> Nested reply",
+    "",
+    "Thanks"
+  ].join("\r\n");
+  const rendered = await createRenderer().render({
+    mode: "plain-text",
+    bodyText
+  });
+
+  assert.equal(rendered.content, bodyText);
+  assert.deepEqual(rendered.plainTextLines, [
+    { content: "Hello,", quoteDepth: 0 },
+    { content: "", quoteDepth: 0 },
+    { content: "> Previous reply", quoteDepth: 1 },
+    { content: ">> Nested reply", quoteDepth: 2 },
+    { content: "", quoteDepth: 0 },
+    { content: "Thanks", quoteDepth: 0 }
+  ]);
 });
 
 test("sanitizes unsafe HTML and hardens external links", async () => {

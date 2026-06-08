@@ -547,15 +547,23 @@ export function App() {
           </div>
         </header>
 
-        <div className="workspace-grid">
-          <InboxScreen
-            activeView={activeView}
-            isBusy={isBusy}
-            mailState={mailState}
-            selectedMessageId={selectedMessageId}
-            onOpenThread={(message) => void handleOpenThread(message)}
-            onRefresh={handleRefreshInbox}
-          />
+        <div
+          className={
+            activeView === "compose"
+              ? "workspace-grid workspace-grid--compose"
+              : "workspace-grid"
+          }
+        >
+          {activeView !== "compose" ? (
+            <InboxScreen
+              activeView={activeView}
+              isBusy={isBusy}
+              mailState={mailState}
+              selectedMessageId={selectedMessageId}
+              onOpenThread={(message) => void handleOpenThread(message)}
+              onRefresh={handleRefreshInbox}
+            />
+          ) : null}
           {activeView === "compose" ? (
             <ComposeScreen
               accountEmailAddress={mailState.accountConfig?.account.emailAddress}
@@ -824,7 +832,7 @@ function MessageReadingView({
       <section className="message-body" aria-label="Message body">
         {renderedEmail.content ? (
           renderedEmail.mode === "plain-text" ? (
-            <pre className="plain-text-body">{renderedEmail.content}</pre>
+            <PlainTextMessageBody renderedEmail={renderedEmail} />
           ) : (
             <div
               className="safe-html-body"
@@ -867,6 +875,29 @@ function MessageReadingView({
         </section>
       ) : null}
     </article>
+  );
+}
+
+function PlainTextMessageBody({ renderedEmail }: { renderedEmail: RenderedEmail }) {
+  const lines = renderedEmail.plainTextLines ?? [
+    { content: renderedEmail.content, quoteDepth: 0 }
+  ];
+
+  return (
+    <div className="plain-text-body">
+      {lines.map((line, index) => (
+        <span
+          key={`${index}-${line.quoteDepth}`}
+          className={
+            line.quoteDepth > 0
+              ? "plain-text-line plain-text-line--quoted"
+              : "plain-text-line"
+          }
+        >
+          {line.content || "\u00a0"}
+        </span>
+      ))}
+    </div>
   );
 }
 

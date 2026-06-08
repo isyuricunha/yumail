@@ -198,6 +198,26 @@ Acceptance:
   `password:` or `user:` prefixes.
 - Bearer-token servers can still be configured explicitly.
 
+## Milestone 3.8 - Compose And Plain-Text Polish
+
+Status: implemented.
+
+- Compose uses a dedicated editor-and-drafts workspace instead of sharing space with
+  the Inbox list.
+- Send and Discard remain outside the scrolling editor region and visible at the bottom
+  of the compose panel.
+- The message body editor has a bounded, comfortable writing area without introducing
+  document-level horizontal scrolling.
+- Plain-text messages preserve original line breaks and blank lines.
+- Quoted reply lines remain text-only and receive distinct visual treatment based on
+  renderer-provided quote metadata.
+- Sanitized HTML rendering and remote-image blocking are unchanged.
+
+Acceptance:
+
+- Compose actions remain accessible while recipient fields and body content scroll.
+- Plain-text messages and quoted replies remain readable without HTML interpretation.
+
 ## Milestone 4 - AI Provider Layer
 
 - AI settings.

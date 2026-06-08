@@ -114,6 +114,17 @@
 - [x] Test Basic/Bearer headers, redirect auth handling, Stalwart-like Basic success,
   401 diagnostics, and secret-free diagnostics.
 
+## Milestone 3.8 - Compose And Plain-Text Polish
+
+- [x] Give compose a dedicated editor-and-drafts workspace.
+- [x] Keep Send and Discard outside the scrolling compose editor.
+- [x] Prevent document-level horizontal scrolling in the desktop shell.
+- [x] Make the plain-text body editor comfortable and visibly editable.
+- [x] Preserve received plain-text line breaks and blank lines.
+- [x] Render quoted reply lines as safe React text with distinct styling.
+- [x] Keep sanitized HTML and remote-image behavior unchanged.
+- [x] Test multiline and nested quoted plain-text rendering metadata.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.

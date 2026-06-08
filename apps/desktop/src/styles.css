@@ -1,11 +1,18 @@
+html,
+body,
 #root {
-  min-height: 100vh;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 236px minmax(724px, 1fr);
-  min-height: 100vh;
+  grid-template-columns: clamp(190px, 18vw, 236px) minmax(0, 1fr);
+  width: 100%;
+  height: 100vh;
+  min-width: 0;
   background: var(--ym-color-black);
 }
 
@@ -127,16 +134,26 @@
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: 320px minmax(380px, 1fr) 320px;
+  grid-template-columns:
+    minmax(240px, 320px)
+    minmax(320px, 1fr)
+    minmax(240px, 320px);
   gap: var(--ym-space-3);
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding: var(--ym-space-3);
+}
+
+.workspace-grid--compose {
+  grid-template-columns: minmax(0, 1fr) clamp(220px, 24vw, 280px);
 }
 
 .mail-list,
 .thread-panel,
 .compose-panel,
 .detail-rail {
+  min-width: 0;
   min-height: 0;
 }
 
@@ -325,11 +342,25 @@
 }
 
 .plain-text-body {
+  display: block;
+  max-width: 100%;
   margin: 0;
   color: var(--ym-color-text);
   font: 14px/1.65 var(--ym-font-sans);
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  white-space: break-spaces;
+}
+
+.plain-text-line {
+  display: block;
+  min-height: 1.65em;
+}
+
+.plain-text-line--quoted {
+  border-left: 2px solid var(--ym-color-border-strong);
+  background: rgb(255 255 255 / 0.025);
+  color: var(--ym-color-text-muted);
+  padding-left: var(--ym-space-3);
 }
 
 .safe-html-body {
@@ -417,7 +448,13 @@
 }
 
 .compose-panel {
+  height: 100%;
   background: var(--ym-color-panel);
+}
+
+.compose-heading,
+.compose-footer {
+  flex: 0 0 auto;
 }
 
 .compose-editor {
@@ -471,27 +508,35 @@
 
 .compose-body {
   flex: 1 1 auto;
-  min-height: 280px;
-  border: 0;
-  background: transparent;
-  padding: var(--ym-space-4) 0;
-  resize: none;
+  min-height: clamp(240px, 42vh, 520px);
+  margin-top: var(--ym-space-3);
+  border-color: var(--ym-color-border);
+  background: var(--ym-color-panel-sunken);
+  padding: var(--ym-space-4);
+  line-height: 1.6;
+  resize: vertical;
 }
 
 .compose-body:focus {
-  background: transparent;
+  background: var(--ym-color-panel-sunken);
 }
 
 .compose-footer {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--ym-space-4);
   border-top: 1px solid var(--ym-color-border);
+  background: var(--ym-color-panel);
   padding: var(--ym-space-3) var(--ym-space-4);
 }
 
 .compose-status {
+  flex: 1 1 260px;
   min-width: 0;
 }
 
@@ -616,7 +661,14 @@
 
 @media (max-width: 1120px) {
   .workspace-grid {
-    grid-template-columns: 280px minmax(380px, 1fr) 280px;
+    grid-template-columns:
+      minmax(180px, 240px)
+      minmax(260px, 1fr)
+      minmax(180px, 240px);
+  }
+
+  .workspace-grid--compose {
+    grid-template-columns: minmax(0, 1fr) 220px;
   }
 
   .compose-recipient-row {

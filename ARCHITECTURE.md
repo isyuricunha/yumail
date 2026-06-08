@@ -191,6 +191,11 @@ A second detached-DOM pass removes non-embedded image sources by default and har
 HTTP(S) and mail links with a new browsing context, `noopener`, `noreferrer`, and no
 referrer.
 
+Plain-text rendering keeps the original body unchanged and additionally exposes
+line-by-line quote-depth metadata. The desktop UI renders those lines as React text
+nodes, preserving blank lines and visually separating quoted replies without converting
+untrusted text into HTML.
+
 Raw cached email HTML must never be rendered directly in the app DOM.
 
 ### `packages/search`

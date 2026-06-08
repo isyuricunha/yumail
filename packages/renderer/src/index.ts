@@ -12,10 +12,16 @@ export interface RenderEmailInput {
 export interface RenderedEmail {
   mode: RenderMode;
   content: string;
+  plainTextLines?: PlainTextLine[];
   remoteImagesBlocked: boolean;
   remoteImageUrls: string[];
   externalLinkUrls: string[];
   trackingPixelsDetected: number;
+}
+
+export interface PlainTextLine {
+  content: string;
+  quoteDepth: number;
 }
 
 export interface EmailRenderer {
@@ -68,6 +74,13 @@ const SANITIZER_OPTIONS: Config = {
   SANITIZE_NAMED_PROPS: true
 };
 
+export function createPlainTextLines(content: string): PlainTextLine[] {
+  return content.split(/\r\n|\n|\r/u).map((line) => ({
+    content: line,
+    quoteDepth: getPlainTextQuoteDepth(line)
+  }));
+}
+
 export function createEmailRenderer(windowLike: WindowLike): EmailRenderer {
   const document = windowLike.document;
 
@@ -84,9 +97,12 @@ export function createEmailRenderer(windowLike: WindowLike): EmailRenderer {
   return {
     async render(input) {
       if (input.mode === "plain-text") {
+        const content = input.bodyText ?? "";
+
         return {
           mode: "plain-text",
-          content: input.bodyText ?? "",
+          content,
+          plainTextLines: createPlainTextLines(content),
           remoteImagesBlocked: false,
           remoteImageUrls: [],
           externalLinkUrls: [],
@@ -163,6 +179,11 @@ export function createEmailRenderer(windowLike: WindowLike): EmailRenderer {
       };
     }
   };
+}
+
+function getPlainTextQuoteDepth(line: string): number {
+  const quotePrefix = line.match(/^\s*(?:>\s*)+/u)?.[0];
+  return quotePrefix ? [...quotePrefix].filter((character) => character === ">").length : 0;
 }
 
 function isExternalImageSource(value: string): boolean {
