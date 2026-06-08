@@ -5,6 +5,8 @@ description = "YuMail desktop shell"
 authors = ["YuMail"]
 edition = "2021"
 
+[package.metadata]
+
 [lib]
 name = "yumail_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

@@ -46,7 +46,6 @@
 - [x] Persist JMAP configuration and credential references without secret values.
 - [x] Replace runtime metadata localStorage with SQLite.
 - [x] Replace secret localStorage fallback with native OS credential storage.
-- [x] Remove known legacy development browser-storage keys at startup.
 - [x] Keep React and shared packages independent of SQL and credential plugins.
 - [x] Test migration application and SQLite persistence across database reopen.
 - [x] Test secure-storage reference use for saved connection checks and refresh.
@@ -64,6 +63,18 @@
 - [x] Add compose, reply, autosave, discard, send, success, and error UI states.
 - [x] Keep provider calls, SQLite, credentials, and JMAP payloads out of React.
 - [x] Test JMAP payloads, reply metadata, drafts, failures, and explicit-send behavior.
+
+## Milestone 3.1 - Windows Development Parity
+
+- [x] Replace the quoted workspace-glob package build with explicit package filters.
+- [x] Replace shell-expanded test globs with `scripts/run-tests.mjs`.
+- [x] Remove the production desktop localStorage cleanup path.
+- [x] Keep the boundary checker strict against all desktop React browser-storage usage.
+- [x] Add committed Tauri desktop icon assets, including `icons/icon.ico`.
+- [x] Explicitly list committed icon assets in `tauri.conf.json`.
+- [x] Add a check that referenced Tauri icon assets exist.
+- [x] Add an empty Cargo `[package.metadata]` table.
+- [x] Document Windows Rust/MSVC/WebView2/keyring prerequisites and next commands.
 
 ## Discovered Follow-ups
 

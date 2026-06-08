@@ -20,6 +20,21 @@ intentionally deferred.
 On Linux, the secure-storage adapter requires a working Secret Service provider such as
 GNOME Keyring or a compatible KeePassXC setup.
 
+### Windows Development Prerequisites
+
+For Windows 10 Pro development, install the Tauri desktop prerequisites before running
+`tauri:dev`:
+
+- Rust through rustup, then run `rustup default stable-msvc`.
+- Microsoft C++ Build Tools with the "Desktop development with C++" workload.
+- Microsoft Edge WebView2 Runtime. Windows 10 version 1803 and later usually already
+  include it, but installing the Evergreen Runtime is a safe repair step.
+- Windows Credential Manager must be available for the keyring-backed secure-storage
+  adapter.
+
+These are the current Tauri v2 Windows prerequisites documented by Tauri:
+<https://v2.tauri.app/start/prerequisites/>.
+
 ## Install
 
 ```bash
@@ -52,6 +67,18 @@ pnpm check:boundaries
 ```
 
 `pnpm check` runs typecheck, lint, and the architecture boundary verifier.
+`pnpm test` first runs the explicit cross-platform package build and then uses
+`scripts/run-tests.mjs` to avoid shell-specific glob expansion.
+
+On Windows, run these from PowerShell after `pnpm install`:
+
+```powershell
+rustup default stable-msvc
+pnpm test
+pnpm check
+pnpm build
+pnpm --filter @yumail/desktop tauri:dev
+```
 
 ## Project Layout
 
@@ -137,9 +164,34 @@ hardcoded password or storing it beside the vault would not improve security. Yu
 instead uses the operating system credential manager and fails closed if it is
 unavailable.
 
-The app performs deletion-only cleanup of the legacy
-`yumail.development-secrets.v1` and `yumail.mail-metadata.v1` browser-storage keys.
-There is no browser-storage persistence fallback.
+There is no browser-storage persistence fallback and no production localStorage cleanup
+path. The architecture checker fails on any `localStorage` or `sessionStorage` reference
+under desktop React source.
+
+On Windows, verify secure storage through Credential Manager:
+
+1. Run the desktop app with `pnpm --filter @yumail/desktop tauri:dev`.
+2. Save a test JMAP account from Settings.
+3. Open Windows Credential Manager and check for a YuMail credential entry.
+4. Confirm `yumail.sqlite3` contains account metadata and credential references only,
+   not secret values.
+
+## Tauri Desktop Assets
+
+Tauri uses icon files from `apps/desktop/src-tauri/icons`. Windows development requires
+`icons/icon.ico` for the generated Windows resource file. The repo includes placeholder
+desktop icons and `tauri.conf.json` explicitly references every committed icon asset:
+
+- `icons/32x32.png`
+- `icons/128x128.png`
+- `icons/128x128@2x.png`
+- `icons/icon.icns`
+- `icons/icon.ico`
+- `icons/icon.png`
+
+The Cargo manifest includes an empty `[package.metadata]` table. No product metadata is
+required there yet; the table prevents Tauri/Cargo metadata consumers from reporting a
+missing package metadata table during development.
 
 ## Compose And Send
 

@@ -7,10 +7,10 @@
   "scripts": {
     "dev": "pnpm --filter @yumail/desktop tauri:dev",
     "build": "pnpm build:packages && pnpm --filter @yumail/desktop build",
-    "build:packages": "pnpm -r --filter './packages/**' build",
+    "build:packages": "pnpm -r --filter @yumail/shared --filter @yumail/ui --filter @yumail/mail --filter @yumail/renderer --filter @yumail/platform-tauri --filter @yumail/ai --filter @yumail/db --filter @yumail/search --filter @yumail/core build",
     "typecheck": "tsc -b",
     "lint": "eslint .",
-    "test": "pnpm build:packages && node --test packages/mail/test/*.test.mjs packages/core/test/*.test.mjs packages/db/test/*.test.mjs packages/renderer/test/*.test.mjs",
+    "test": "pnpm build:packages && node scripts/run-tests.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm check:boundaries",
     "check:boundaries": "node scripts/check-boundaries.mjs"
   },

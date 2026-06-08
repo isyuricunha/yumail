@@ -75,7 +75,6 @@ Status: implemented.
 - JMAP configuration and credential-reference table.
 - Native OS credential manager integration through the secure-storage adapter.
 - Removal of runtime browser-backed metadata and secret persistence.
-- One-time deletion of legacy development browser-storage keys.
 - Persistence and migration tests against a real SQLite file.
 
 Acceptance:
@@ -116,6 +115,28 @@ Remaining hardening:
 - add rich-text/HTML composition.
 - decide whether provider-side draft synchronization is needed.
 - add offline send queue only as an explicit future feature.
+
+## Milestone 3.1 - Windows Development Parity
+
+Status: implemented.
+
+- Cross-platform `build:packages` script with explicit package filters instead of a
+  quoted workspace glob.
+- Cross-platform test runner script that discovers package test files without shell
+  glob expansion.
+- Strict production browser-storage boundary: no desktop React localStorage or
+  sessionStorage references remain.
+- Tauri desktop icon assets committed and explicitly referenced in `tauri.conf.json`.
+- Empty Cargo `[package.metadata]` table added to avoid noisy missing-metadata output.
+- README documents Windows Rust/MSVC/WebView2/Credential Manager prerequisites and the
+  next Windows verification commands.
+
+Acceptance:
+
+- Windows `pnpm test`, `pnpm check`, and `pnpm build` can run after `pnpm install`.
+- Windows `pnpm --filter @yumail/desktop tauri:dev` can progress past the missing
+  `icons/icon.ico` failure.
+- Linux package build, checks, and Rust gates remain working.
 
 ## Milestone 4 - AI Provider Layer
 

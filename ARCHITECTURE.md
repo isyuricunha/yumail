@@ -202,15 +202,17 @@ store is unavailable, account save/refresh fails with a clear error. Stronghold 
 used because YuMail does not yet have a safe user-managed vault-password lifecycle;
 hardcoding or storing that password beside the vault would weaken the design.
 
-At startup, the desktop removes the two known legacy development localStorage keys.
-This cleanup never reads or persists browser-storage values and is not a persistence
-path.
-
 ### Desktop Database Initialization
 
 Rust registers migrations 0001 through 0004 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
+
+### Desktop Runtime Assets
+
+Tauri desktop icons live under `apps/desktop/src-tauri/icons` and are explicitly listed
+in `tauri.conf.json`. The boundary checker verifies those paths exist so Windows
+development cannot regress to the missing `icons/icon.ico` build failure.
 
 ## Enforced Rules
 
@@ -225,8 +227,8 @@ The boundary script fails if:
 - `packages/core`, `packages/mail`, `packages/ai`, `packages/db`, `packages/renderer`, `packages/search`, or `packages/shared` import Tauri-specific APIs.
 - React source in `apps/desktop/src` or `packages/ui/src` calls Tauri `invoke` directly.
 - React source imports the SQL or Stronghold plugins directly.
-- production desktop code reads or persists values through localStorage/sessionStorage;
-  the deletion-only legacy cleanup is explicitly allowlisted.
+- production desktop code references localStorage/sessionStorage.
+- Tauri icon assets referenced by `tauri.conf.json` are missing.
 
 ## Dependency Direction
 

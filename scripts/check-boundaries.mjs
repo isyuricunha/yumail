@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
@@ -103,20 +103,38 @@ async function checkReactInvokeUsage() {
 
 async function checkProductionLocalStorageUsage() {
   const violations = [];
-  const allowedCleanupFile = "apps/desktop/src/services/legacy-browser-storage-cleanup.ts";
 
   for (const file of await collectFiles("apps/desktop/src")) {
     const contents = await readFile(path.join(root, file), "utf8");
 
-    if (
-      /\b(?:localStorage|sessionStorage)\b/u.test(contents) &&
-      file !== allowedCleanupFile
-    ) {
+    if (/\b(?:localStorage|sessionStorage)\b/u.test(contents)) {
       violations.push(`${file}: production desktop persistence must not use browser storage`);
     }
+  }
 
-    if (/\b(?:localStorage|sessionStorage)\.(?:getItem|setItem)\b/u.test(contents)) {
-      violations.push(`${file}: production desktop code must not read or write browser storage`);
+  return violations;
+}
+
+async function checkTauriIconAssets() {
+  const violations = [];
+  const configPath = path.join(root, "apps/desktop/src-tauri/tauri.conf.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  const configuredIcons = Array.isArray(config.bundle?.icon)
+    ? config.bundle.icon
+    : ["icons/icon.ico"];
+
+  for (const iconPath of configuredIcons) {
+    if (typeof iconPath !== "string") {
+      violations.push("apps/desktop/src-tauri/tauri.conf.json: bundle.icon entries must be strings");
+      continue;
+    }
+
+    const relativeIconPath = path.join("apps/desktop/src-tauri", iconPath);
+
+    try {
+      await access(path.join(root, relativeIconPath));
+    } catch {
+      violations.push(`${relativeIconPath}: Tauri icon asset is referenced but missing`);
     }
   }
 
@@ -126,7 +144,8 @@ async function checkProductionLocalStorageUsage() {
 const violations = [
   ...await checkTauriImports(),
   ...await checkReactInvokeUsage(),
-  ...await checkProductionLocalStorageUsage()
+  ...await checkProductionLocalStorageUsage(),
+  ...await checkTauriIconAssets()
 ];
 
 if (violations.length > 0) {
