@@ -31,6 +31,7 @@ export class SqliteAiSummaryRepository implements AiSummaryRepository {
     cacheKey: AiSummaryCacheKey
   ): Promise<AiSummaryRecord | undefined> {
     const database = await this.getDatabase();
+    const scope = getSummaryScope(cacheKey);
     const rows = await database.select<AiSummaryRow>(`
       SELECT
         id,
@@ -48,7 +49,7 @@ export class SqliteAiSummaryRepository implements AiSummaryRepository {
         updated_at
       FROM ai_summaries
       WHERE account_id = ?
-        AND message_id = ?
+        AND ${scope.column} = ?
         AND provider_id = ?
         AND model_used = ?
         AND prompt_id = ?
@@ -58,7 +59,7 @@ export class SqliteAiSummaryRepository implements AiSummaryRepository {
       LIMIT 1
     `, [
       cacheKey.accountId,
-      cacheKey.messageId,
+      scope.value,
       cacheKey.providerId,
       cacheKey.model,
       cacheKey.promptId,
@@ -115,6 +116,31 @@ export class SqliteAiSummaryRepository implements AiSummaryRepository {
     ]);
   }
 
+  async deleteSummariesForContext(input: {
+    accountId: string;
+    messageId?: string;
+    threadId?: string;
+  }): Promise<number> {
+    const database = await this.getDatabase();
+    const scope = getSummaryScope(input);
+    const result = await database.execute(
+      `DELETE FROM ai_summaries WHERE account_id = ? AND ${scope.column} = ?`,
+      [input.accountId, scope.value]
+    );
+
+    return result.rowsAffected;
+  }
+
+  async deleteSummariesForAccount(accountId: string): Promise<number> {
+    const database = await this.getDatabase();
+    const result = await database.execute(
+      "DELETE FROM ai_summaries WHERE account_id = ?",
+      [accountId]
+    );
+
+    return result.rowsAffected;
+  }
+
   private getDatabase(): Promise<SqlDatabase> {
     this.databasePromise ??= this.createDatabase().then(async (database) => {
       await database.execute("PRAGMA foreign_keys = ON");
@@ -123,6 +149,30 @@ export class SqliteAiSummaryRepository implements AiSummaryRepository {
 
     return this.databasePromise;
   }
+}
+
+function getSummaryScope(input: {
+  messageId?: string;
+  threadId?: string;
+}): {
+  column: "message_id" | "thread_id";
+  value: string;
+} {
+  if (input.threadId) {
+    return {
+      column: "thread_id",
+      value: input.threadId
+    };
+  }
+
+  if (input.messageId) {
+    return {
+      column: "message_id",
+      value: input.messageId
+    };
+  }
+
+  throw new Error("AI summary cache scope requires a message ID or thread ID.");
 }
 
 function mapAiSummary(row: AiSummaryRow): AiSummaryRecord {

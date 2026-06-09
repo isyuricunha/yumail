@@ -155,18 +155,31 @@ function createFixture() {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  const threadDetail = {
+    id: `${accountId}:thread:thread-1`,
+    accountId,
+    providerThreadId: "thread-1",
+    subject: "Persisted message",
+    participants: [messageDetail.from, ...messageDetail.to],
+    messageCount: 1,
+    latestMessageAt: messageDetail.date,
+    isUnread: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: [messageDetail]
+  };
 
-  return { accountConfig, mailbox, messageDetail, syncState, draft };
+  return { accountConfig, mailbox, messageDetail, syncState, draft, threadDetail };
 }
 
 test("registers and applies every SQLite migration", async () => {
   const database = new DatabaseSync(":memory:");
   await applyRegisteredMigrations(database);
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 8);
+  assert.equal(INITIAL_SCHEMA_VERSION, 9);
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8]
+    [1, 2, 3, 4, 5, 6, 7, 8, 9]
   );
 
   const tables = database.prepare(`
@@ -221,6 +234,7 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
     );
     await firstRepository.saveMessages(fixture.mailbox.id, [fixture.messageDetail]);
     await firstRepository.saveMessageDetail(fixture.messageDetail);
+    await firstRepository.saveThreadDetail(fixture.threadDetail);
     await firstRepository.saveSyncState(fixture.syncState);
     await firstRepository.saveDraft(fixture.draft);
     await firstRepository.savePreference("reading.mode", { mode: "safe-html" });
@@ -243,6 +257,10 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
       fixture.accountConfig.account.id,
       fixture.messageDetail.providerMessageId
     );
+    const threadDetail = await secondRepository.getThreadDetail(
+      fixture.accountConfig.account.id,
+      fixture.threadDetail.providerThreadId
+    );
     const [syncState] = await secondRepository.listSyncStates();
     const [draft] = await secondRepository.listDrafts(
       fixture.accountConfig.account.id
@@ -254,6 +272,7 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
       mailbox,
       message,
       detail,
+      threadDetail,
       syncState,
       draft,
       preference,
@@ -284,6 +303,9 @@ test("persists mail cache, local drafts, sync state, and preferences across reop
     assert.equal(detail.bodyHtml, "<p>Persisted HTML body</p>");
     assert.equal(detail.bodyParts[0].blobId, "body-blob");
     assert.equal(detail.attachments[0].filename, "report.pdf");
+    assert.equal(threadDetail.id, fixture.threadDetail.id);
+    assert.equal(threadDetail.messageCount, 1);
+    assert.equal(threadDetail.messages[0].bodyText, "Persisted plain body");
     assert.equal(syncState.syncCursor, "cursor-1");
     assert.equal(draft.mode, "reply");
     assert.equal(draft.relatedProviderMessageId, "message-1");

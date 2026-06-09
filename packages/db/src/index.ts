@@ -5,7 +5,8 @@ import type {
   LocalDraft,
   Mailbox,
   Message,
-  MessageDetail
+  MessageDetail,
+  ThreadDetail
 } from "@yumail/mail";
 import type { EntityId, IsoDateTime, ProviderType } from "@yumail/shared";
 
@@ -15,7 +16,7 @@ export interface Migration {
   path: string;
 }
 
-export const INITIAL_SCHEMA_VERSION = 8;
+export const INITIAL_SCHEMA_VERSION = 9;
 
 export const migrations: Migration[] = [
   {
@@ -54,9 +55,14 @@ export const migrations: Migration[] = [
     path: "packages/db/migrations/0007_ai_provider_settings.sql"
   },
   {
-    version: INITIAL_SCHEMA_VERSION,
+    version: 8,
     name: "ai_thread_summaries",
     path: "packages/db/migrations/0008_ai_thread_summaries.sql"
+  },
+  {
+    version: INITIAL_SCHEMA_VERSION,
+    name: "thread_summary_prompt_v2",
+    path: "packages/db/migrations/0009_thread_summary_prompt_v2.sql"
   }
 ];
 
@@ -140,6 +146,14 @@ export interface MessageDetailRepository {
   ): Promise<MessageDetail | undefined>;
 }
 
+export interface ThreadRepository {
+  saveThreadDetail(threadDetail: ThreadDetail): Promise<void>;
+  getThreadDetail(
+    accountId: EntityId,
+    providerThreadId: string
+  ): Promise<ThreadDetail | undefined>;
+}
+
 export interface SyncStateRepository {
   listSyncStates(): Promise<ProviderSyncState[]>;
   saveSyncState(syncState: ProviderSyncState): Promise<void>;
@@ -165,7 +179,8 @@ export interface AiProviderRepository {
 
 export interface AiSummaryCacheKey {
   accountId: EntityId;
-  messageId: EntityId;
+  messageId?: EntityId;
+  threadId?: EntityId;
   providerId: EntityId;
   model: string;
   promptId: string;
@@ -176,6 +191,12 @@ export interface AiSummaryCacheKey {
 export interface AiSummaryRepository {
   getCachedSummary(cacheKey: AiSummaryCacheKey): Promise<AiSummaryRecord | undefined>;
   saveSummary(record: AiSummaryRecord): Promise<void>;
+  deleteSummariesForContext(input: {
+    accountId: EntityId;
+    messageId?: EntityId;
+    threadId?: EntityId;
+  }): Promise<number>;
+  deleteSummariesForAccount(accountId: EntityId): Promise<number>;
 }
 
 export interface MailMetadataRepository
@@ -183,6 +204,7 @@ export interface MailMetadataRepository
   MailboxRepository,
   MessageRepository,
   MessageDetailRepository,
+  ThreadRepository,
   SyncStateRepository,
   DraftRepository {
   loadSnapshot(): Promise<MailMetadataSnapshot>;

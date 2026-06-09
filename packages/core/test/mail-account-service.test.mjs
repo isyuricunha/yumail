@@ -241,6 +241,7 @@ class MemoryRepository {
     syncStates: []
   };
   drafts = {};
+  threads = {};
 
   async loadSnapshot() {
     return this.snapshot;
@@ -281,6 +282,18 @@ class MemoryRepository {
   async getMessageDetail(accountId, providerMessageId) {
     const key = `${encodeURIComponent(accountId)}:${encodeURIComponent(providerMessageId)}`;
     return this.snapshot.messageDetailsByCacheKey[key];
+  }
+
+  async saveThreadDetail(threadDetail) {
+    this.threads[`${threadDetail.accountId}:${threadDetail.providerThreadId}`] =
+      threadDetail;
+    for (const message of threadDetail.messages) {
+      await this.saveMessageDetail(message);
+    }
+  }
+
+  async getThreadDetail(accountId, providerThreadId) {
+    return this.threads[`${accountId}:${providerThreadId}`];
   }
 
   async saveSyncState(syncState) {
@@ -448,6 +461,36 @@ test("loads message detail from the provider once and then uses the local cache"
   assert.equal(cached.source, "cache");
   assert.equal(cached.messageDetail.bodyText, "Provider body");
   assert.equal(detailRequests.length, 1);
+});
+
+test("falls back to the selected message when provider thread assembly is unavailable", async () => {
+  const repository = new MemoryRepository();
+  const accountConfig = createStoredAccountConfig();
+  const messageDetail = createCachedMessageDetail();
+  repository.snapshot.accountConfigs = [accountConfig];
+  const secretStorage = new MemorySecretStorage();
+  secretStorage.secrets[accountConfig.credentialReference] = "secure-token";
+  const readingService = createThreadReadingService({
+    metadataRepository: repository,
+    secretStorage,
+    fetch: async (_url, init) => {
+      if (init?.method === "GET") {
+        return createFetchMock()(_url, init);
+      }
+
+      throw new Error("Thread endpoint unavailable");
+    }
+  });
+
+  const result = await readingService.loadThreadDetail({
+    messageDetail,
+    forceRefresh: true
+  });
+
+  assert.equal(result.source, "single-message");
+  assert.equal(result.selectedMessageId, messageDetail.id);
+  assert.equal(result.threadDetail.messageCount, 1);
+  assert.deepEqual(result.threadDetail.messages, [messageDetail]);
 });
 
 test("parses and validates compose recipients", () => {

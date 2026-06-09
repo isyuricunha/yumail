@@ -180,7 +180,7 @@ rendered directly.
 Milestone 2.5 makes SQLite the desktop runtime source of truth:
 
 - `@tauri-apps/plugin-sql` opens `sqlite:yumail.sqlite3`.
-- Rust registers migrations 0001 through 0008.
+- Rust registers migrations 0001 through 0009.
 - Pending migrations run when the database is first opened during app startup.
 - Account metadata, JMAP configuration references, mailboxes, messages, recipients,
   tags, body cache, attachments, local drafts, sync states, and preferences persist in
@@ -293,34 +293,35 @@ analysis, and automatic/background AI remain deferred.
 
 ## Manual AI Summaries
 
-Milestone 5A adds the first email AI action. Open a message and click Summarize. YuMail
-shows an explicit privacy review before any request and requires a second click on
-Send to AI.
+Milestones 5A and 5B add the first email AI action. Open a message and click Summarize.
+YuMail loads its JMAP thread through `Thread/get` and `Email/get` when available, then
+shows an explicit privacy review before any AI request. The user must click Send to AI.
 
 The approved request contains:
 
-- subject, sender, To/Cc recipients, and message date;
-- the visible plain-text body, or the cached snippet when no plain-text body exists;
-- attachment file name, content type, and available size.
+- assembled messages in chronological order;
+- subject, sender, To/Cc recipients, and date for each message;
+- visible plain-text body, or the cached snippet when no plain-text body exists;
+- attachment file name, content type, and available size for each message.
 
 It excludes raw/hidden HTML, remote images, tracking resources, Bcc recipients,
-provider attachment identifiers, attachment contents, and credentials. HTML-only
-messages currently use the safe snippet rather than converting raw HTML for AI.
+provider attachment identifiers, attachment contents, and credentials. HTTP(S) URLs in
+plain-text input are replaced with a remote-URL placeholder. HTML-only messages use the
+safe snippet rather than converting raw HTML for AI.
 
-The `summarize-thread` prompt is versioned as `1.0.0` and explicitly treats all email
+The current `summarize-thread` prompt is versioned as `2.0.0` and explicitly treats all email
 fields as untrusted data. The OpenAI-compatible request uses
 `POST {baseUrl}/chat/completions` with system/user messages and requests a JSON object.
 The result is validated before display or persistence.
 
-Migration 0008 stores summaries in `ai_summaries` with account/message, provider,
-model, prompt id/version, input hash, structured output, normalized summary text, and
-timestamps. Reopening a message queries this cache without retrieving the API key or
-calling the network. Regenerate repeats the privacy review and refreshes the matching
-cache record.
+Migrations 0008 and 0009 store versioned summaries in `ai_summaries` and register both
+prompt versions. Assembled summaries are keyed by internal thread ID; fallback summaries
+are keyed by selected message ID. Provider/model/prompt/input hash complete the
+deterministic cache key. A content change produces a new input hash.
 
-The current reading path opens one normalized `MessageDetail`, so Milestone 5A
-summarizes that selected message and preserves provider thread context only in the mail
-model. Provider-backed multi-message thread assembly remains a later reading milestone.
+The summary panel can regenerate after privacy review, delete the current message/thread
+cache, or clear every cached summary for the current account. If provider thread
+assembly fails, YuMail clearly falls back to the selected message.
 
 ## Windows/Stalwart Smoke Test
 

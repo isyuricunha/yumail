@@ -156,6 +156,22 @@
 - [x] Test prompt metadata/input, prompt injection defense, request construction,
   cache behavior, SQLite persistence, and secret leakage.
 
+## Milestone 5B - Thread Assembly And AI Cache Controls
+
+- [x] Implement JMAP `Thread/get` plus full `Email/get` message assembly.
+- [x] Normalize and preserve chronological thread message order.
+- [x] Persist thread metadata and link cached message details to internal thread IDs.
+- [x] Fall back to the selected message when thread context is unavailable.
+- [x] Advance `summarize-thread` to prompt version `2.0.0`.
+- [x] Include safe per-message subject, sender, To/Cc, date, body text, and attachment
+  metadata.
+- [x] Exclude raw HTML, Bcc, remote/tracking URLs, attachment contents, provider IDs,
+  and secrets.
+- [x] Use thread-scoped cache keys with message-scoped fallback.
+- [x] Add delete-current and clear-account AI summary cache controls.
+- [x] Test assembly order, fallback, privacy projection, hash changes, deletion, and
+  secret/body diagnostic leakage.
+
 ## Discovered Follow-ups
 
 - [x] Add automated tests when Milestone 1 introduces executable JMAP/account logic.
@@ -182,6 +198,7 @@
 - [ ] Verify AI provider setup against a live OpenAI-compatible endpoint on Windows.
 - [ ] Verify manual summary generation against a live OpenAI-compatible endpoint on
   Windows.
-- [ ] Add provider-backed multi-message thread assembly before whole-thread AI context.
-- [ ] Add user-facing AI artifact cache deletion controls.
+- [x] Add provider-backed multi-message thread assembly for AI context.
+- [x] Add user-facing AI summary cache deletion controls.
+- [ ] Add explicit thread-size/token limits for very large conversations.
 - [ ] Add custom provider headers only when required by a verified endpoint.

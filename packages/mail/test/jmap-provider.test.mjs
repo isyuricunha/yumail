@@ -757,6 +757,126 @@ test("fetches and normalizes JMAP message detail body parts and attachments", as
   });
 });
 
+test("assembles JMAP thread messages in chronological order", async () => {
+  const requests = [];
+  const provider = new JmapProvider({
+    localAccountId: "account:yu",
+    emailAddress: "yu@example.com",
+    baseUrl: "https://mail.example.com",
+    authSecret: "token",
+    authMode: "bearer",
+    fetch: async (_url, init) => {
+      if (init?.method === "GET") {
+        return jsonResponse(sessionResponse);
+      }
+
+      const request = JSON.parse(String(init?.body));
+      requests.push(request);
+      const [methodName, argumentsValue, callId] = request.methodCalls[0];
+
+      if (methodName === "Thread/get") {
+        assert.deepEqual(argumentsValue.ids, ["thread-1"]);
+        return jsonResponse({
+          methodResponses: [[
+            "Thread/get",
+            {
+              list: [{
+                id: "thread-1",
+                emailIds: ["email-later", "email-earlier"]
+              }]
+            },
+            callId
+          ]]
+        });
+      }
+
+      if (methodName === "Email/get") {
+        assert.deepEqual(argumentsValue.ids, ["email-later", "email-earlier"]);
+        assert.equal(argumentsValue.fetchTextBodyValues, true);
+        return jsonResponse({
+          methodResponses: [[
+            "Email/get",
+            {
+              list: [
+                {
+                  id: "email-later",
+                  mailboxIds: { "inbox-id": true },
+                  threadId: "thread-1",
+                  from: [{ name: "Yu", email: "yu@example.com" }],
+                  to: [{ name: "Ada", email: "ada@example.com" }],
+                  subject: "Re: Plan",
+                  receivedAt: "2026-06-08T12:00:00.000Z",
+                  preview: "Later",
+                  keywords: { "$seen": true },
+                  bodyValues: {
+                    text2: { value: "Later reply", isTruncated: false }
+                  },
+                  textBody: [{ partId: "text2", type: "text/plain" }],
+                  htmlBody: [],
+                  attachments: []
+                },
+                {
+                  id: "email-earlier",
+                  mailboxIds: { "inbox-id": true },
+                  threadId: "thread-1",
+                  from: [{ name: "Ada", email: "ada@example.com" }],
+                  to: [{ name: "Yu", email: "yu@example.com" }],
+                  cc: [{ email: "team@example.com" }],
+                  bcc: [{ email: "private@example.com" }],
+                  subject: "Plan",
+                  receivedAt: "2026-06-08T10:00:00.000Z",
+                  preview: "Earlier",
+                  keywords: {},
+                  bodyValues: {
+                    text1: { value: "Earlier message", isTruncated: false },
+                    html1: { value: "<img src=\"https://tracker.example/pixel\">", isTruncated: false }
+                  },
+                  textBody: [{ partId: "text1", type: "text/plain" }],
+                  htmlBody: [{ partId: "html1", type: "text/html" }],
+                  attachments: [{
+                    partId: "attachment",
+                    blobId: "private-blob",
+                    type: "application/pdf",
+                    name: "plan.pdf",
+                    size: 2048
+                  }]
+                }
+              ]
+            },
+            callId
+          ]]
+        });
+      }
+
+      throw new Error(`Unexpected JMAP method: ${methodName}`);
+    }
+  });
+
+  const thread = await provider.getThread({
+    accountId: "account:yu",
+    threadId: "account:yu:thread:thread-1",
+    providerThreadId: "thread-1",
+    mailboxId: "account:yu:mailbox:inbox-id"
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(thread.id, "account:yu:thread:thread-1");
+  assert.equal(thread.providerThreadId, "thread-1");
+  assert.equal(thread.messageCount, 2);
+  assert.equal(thread.latestMessageAt, "2026-06-08T12:00:00.000Z");
+  assert.equal(thread.isUnread, true);
+  assert.deepEqual(
+    thread.messages.map((message) => message.providerMessageId),
+    ["email-earlier", "email-later"]
+  );
+  assert.deepEqual(
+    thread.messages.map((message) => message.bodyText),
+    ["Earlier message", "Later reply"]
+  );
+  assert.equal(thread.messages[0].bodyHtml.includes("tracker.example"), true);
+  assert.equal(thread.messages[0].attachments[0].providerAttachmentId, "private-blob");
+});
+
 test("creates and manually submits a JMAP email with reply metadata", async () => {
   const requestLog = [];
   const provider = new JmapProvider({

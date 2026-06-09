@@ -28,6 +28,7 @@ import type {
   AiProviderSetupInput,
   JmapAccountSetupInput,
   JmapConnectionTestResult,
+  LoadThreadDetailResult,
   MailAccountState,
   SummaryPrivacyReview,
   ThreadSummaryResult,
@@ -69,6 +70,8 @@ type ThreadSummaryStatus =
   | "checking-cache"
   | "privacy-review"
   | "loading"
+  | "clearing"
+  | "cleared"
   | "ready"
   | "error";
 
@@ -119,7 +122,10 @@ export function App() {
   const [threadSummaryStatus, setThreadSummaryStatus] =
     useState<ThreadSummaryStatus>("idle");
   const [threadSummaryResult, setThreadSummaryResult] = useState<ThreadSummaryResult>();
+  const [threadSummaryContext, setThreadSummaryContext] =
+    useState<LoadThreadDetailResult>();
   const [threadSummaryError, setThreadSummaryError] = useState<string>();
+  const [threadSummaryNotice, setThreadSummaryNotice] = useState<string>();
   const [summaryPrivacyReview, setSummaryPrivacyReview] =
     useState<SummaryPrivacyReview>();
   const [regenerateSummary, setRegenerateSummary] = useState(false);
@@ -312,7 +318,9 @@ export function App() {
     threadSummaryRequestId.current += 1;
     setThreadSummaryStatus("idle");
     setThreadSummaryResult(undefined);
+    setThreadSummaryContext(undefined);
     setThreadSummaryError(undefined);
+    setThreadSummaryNotice(undefined);
     setSummaryPrivacyReview(undefined);
     setRegenerateSummary(false);
   }
@@ -330,7 +338,9 @@ export function App() {
     setMessageDetailStatus("loading");
     setThreadSummaryStatus("idle");
     setThreadSummaryResult(undefined);
+    setThreadSummaryContext(undefined);
     setThreadSummaryError(undefined);
+    setThreadSummaryNotice(undefined);
     setSummaryPrivacyReview(undefined);
     setRegenerateSummary(false);
 
@@ -359,8 +369,12 @@ export function App() {
       setThreadSummaryStatus("checking-cache");
 
       try {
+        const context = await mailServices.threadReadingService.loadThreadDetail({
+          messageDetail: detail,
+          forceRefresh: true
+        });
         const cachedSummary = await mailServices.threadSummaryService.loadCachedSummary(
-          detail
+          context
         );
 
         if (
@@ -370,6 +384,7 @@ export function App() {
           return;
         }
 
+        setThreadSummaryContext(context);
         setThreadSummaryResult(cachedSummary);
         setThreadSummaryStatus(cachedSummary ? "ready" : "idle");
       } catch {
@@ -388,15 +403,16 @@ export function App() {
   }
 
   function handleReviewSummary(forceRefresh: boolean) {
-    if (!messageDetail) {
+    if (!threadSummaryContext) {
       return;
     }
 
     setSummaryPrivacyReview(
-      mailServices.threadSummaryService.getPrivacyReview(messageDetail)
+      mailServices.threadSummaryService.getPrivacyReview(threadSummaryContext)
     );
     setRegenerateSummary(forceRefresh);
     setThreadSummaryError(undefined);
+    setThreadSummaryNotice(undefined);
     setThreadSummaryStatus("privacy-review");
   }
 
@@ -407,7 +423,7 @@ export function App() {
   }
 
   async function handleConfirmSummary() {
-    if (!messageDetail) {
+    if (!threadSummaryContext) {
       return;
     }
 
@@ -419,7 +435,7 @@ export function App() {
 
     try {
       const result = await mailServices.threadSummaryService.summarizeThread({
-        messageDetail,
+        context: threadSummaryContext,
         forceRefresh: regenerateSummary
       });
 
@@ -435,6 +451,62 @@ export function App() {
         return;
       }
 
+      setThreadSummaryError(getErrorMessage(error));
+      setThreadSummaryStatus("error");
+    }
+  }
+
+  async function handleDeleteCachedSummary() {
+    if (
+      !threadSummaryContext
+      || !window.confirm("Delete the cached AI summary for this message or thread?")
+    ) {
+      return;
+    }
+
+    setThreadSummaryStatus("clearing");
+    setThreadSummaryError(undefined);
+
+    try {
+      const deletedCount = await mailServices.threadSummaryService.deleteCachedSummary(
+        threadSummaryContext
+      );
+      setThreadSummaryResult(undefined);
+      setThreadSummaryNotice(
+        deletedCount > 0
+          ? "Cached summary deleted."
+          : "No cached summary was stored for this context."
+      );
+      setThreadSummaryStatus("cleared");
+    } catch (error) {
+      setThreadSummaryError(getErrorMessage(error));
+      setThreadSummaryStatus("error");
+    }
+  }
+
+  async function handleClearAccountSummaries() {
+    const accountId = threadSummaryContext?.threadDetail.accountId;
+
+    if (
+      !accountId
+      || !window.confirm("Delete every cached AI summary for this mail account?")
+    ) {
+      return;
+    }
+
+    setThreadSummaryStatus("clearing");
+    setThreadSummaryError(undefined);
+
+    try {
+      const deletedCount = await mailServices.threadSummaryService.clearAccountSummaries(
+        accountId
+      );
+      setThreadSummaryResult(undefined);
+      setThreadSummaryNotice(
+        `${deletedCount} cached account summar${deletedCount === 1 ? "y" : "ies"} deleted.`
+      );
+      setThreadSummaryStatus("cleared");
+    } catch (error) {
       setThreadSummaryError(getErrorMessage(error));
       setThreadSummaryStatus("error");
     }
@@ -738,13 +810,17 @@ export function App() {
               errorMessage={messageDetailError}
               summaryStatus={threadSummaryStatus}
               summaryResult={threadSummaryResult}
+              summaryContext={threadSummaryContext}
               summaryError={threadSummaryError}
+              summaryNotice={threadSummaryNotice}
               summaryPrivacyReview={summaryPrivacyReview}
               onReply={() => void handleReply()}
               onSummarize={() => handleReviewSummary(false)}
               onRegenerateSummary={() => handleReviewSummary(true)}
               onCancelSummaryReview={handleCancelSummaryReview}
               onConfirmSummary={() => void handleConfirmSummary()}
+              onDeleteCachedSummary={() => void handleDeleteCachedSummary()}
+              onClearAccountSummaries={() => void handleClearAccountSummaries()}
             />
           )}
           <aside className="detail-rail">
@@ -872,13 +948,17 @@ function ThreadScreen({
   errorMessage,
   summaryStatus,
   summaryResult,
+  summaryContext,
   summaryError,
+  summaryNotice,
   summaryPrivacyReview,
   onReply,
   onSummarize,
   onRegenerateSummary,
   onCancelSummaryReview,
-  onConfirmSummary
+  onConfirmSummary,
+  onDeleteCachedSummary,
+  onClearAccountSummaries
 }: {
   activeView: ActiveView;
   selectedMessage?: Message;
@@ -888,13 +968,17 @@ function ThreadScreen({
   errorMessage?: string;
   summaryStatus: ThreadSummaryStatus;
   summaryResult?: ThreadSummaryResult;
+  summaryContext?: LoadThreadDetailResult;
   summaryError?: string;
+  summaryNotice?: string;
   summaryPrivacyReview?: SummaryPrivacyReview;
   onReply: () => void;
   onSummarize: () => void;
   onRegenerateSummary: () => void;
   onCancelSummaryReview: () => void;
   onConfirmSummary: () => void;
+  onDeleteCachedSummary: () => void;
+  onClearAccountSummaries: () => void;
 }) {
   const visibleMessage = messageDetail ?? selectedMessage;
 
@@ -926,8 +1010,10 @@ function ThreadScreen({
             disabled={
               status !== "ready"
               || !messageDetail
+              || !summaryContext
               || summaryStatus === "loading"
               || summaryStatus === "checking-cache"
+              || summaryStatus === "clearing"
             }
             onClick={onSummarize}
           >
@@ -947,12 +1033,16 @@ function ThreadScreen({
           renderedEmail={renderedEmail}
           summaryStatus={summaryStatus}
           summaryResult={summaryResult}
+          summaryContext={summaryContext}
           summaryError={summaryError}
+          summaryNotice={summaryNotice}
           summaryPrivacyReview={summaryPrivacyReview}
           onSummarize={onSummarize}
           onRegenerateSummary={onRegenerateSummary}
           onCancelSummaryReview={onCancelSummaryReview}
           onConfirmSummary={onConfirmSummary}
+          onDeleteCachedSummary={onDeleteCachedSummary}
+          onClearAccountSummaries={onClearAccountSummaries}
         />
       ) : null}
       {status === "idle" ? (
@@ -995,23 +1085,31 @@ function MessageReadingView({
   renderedEmail,
   summaryStatus,
   summaryResult,
+  summaryContext,
   summaryError,
+  summaryNotice,
   summaryPrivacyReview,
   onSummarize,
   onRegenerateSummary,
   onCancelSummaryReview,
-  onConfirmSummary
+  onConfirmSummary,
+  onDeleteCachedSummary,
+  onClearAccountSummaries
 }: {
   message: MessageDetail;
   renderedEmail: RenderedEmail;
   summaryStatus: ThreadSummaryStatus;
   summaryResult?: ThreadSummaryResult;
+  summaryContext?: LoadThreadDetailResult;
   summaryError?: string;
+  summaryNotice?: string;
   summaryPrivacyReview?: SummaryPrivacyReview;
   onSummarize: () => void;
   onRegenerateSummary: () => void;
   onCancelSummaryReview: () => void;
   onConfirmSummary: () => void;
+  onDeleteCachedSummary: () => void;
+  onClearAccountSummaries: () => void;
 }) {
   return (
     <article className="message-reading-view">
@@ -1034,12 +1132,16 @@ function MessageReadingView({
       <ThreadSummaryPanel
         status={summaryStatus}
         result={summaryResult}
+        context={summaryContext}
         errorMessage={summaryError}
+        notice={summaryNotice}
         privacyReview={summaryPrivacyReview}
         onSummarize={onSummarize}
         onRegenerate={onRegenerateSummary}
         onCancelReview={onCancelSummaryReview}
         onConfirm={onConfirmSummary}
+        onDeleteCached={onDeleteCachedSummary}
+        onClearAccount={onClearAccountSummaries}
       />
 
       {renderedEmail.remoteImagesBlocked ? (
@@ -1110,21 +1212,29 @@ function MessageReadingView({
 function ThreadSummaryPanel({
   status,
   result,
+  context,
   errorMessage,
+  notice,
   privacyReview,
   onSummarize,
   onRegenerate,
   onCancelReview,
-  onConfirm
+  onConfirm,
+  onDeleteCached,
+  onClearAccount
 }: {
   status: ThreadSummaryStatus;
   result?: ThreadSummaryResult;
+  context?: LoadThreadDetailResult;
   errorMessage?: string;
+  notice?: string;
   privacyReview?: SummaryPrivacyReview;
   onSummarize: () => void;
   onRegenerate: () => void;
   onCancelReview: () => void;
   onConfirm: () => void;
+  onDeleteCached: () => void;
+  onClearAccount: () => void;
 }) {
   if (status === "idle") {
     return null;
@@ -1134,7 +1244,9 @@ function ThreadSummaryPanel({
     return (
       <section className="summary-panel summary-panel--loading" aria-label="AI summary">
         <Sparkles size={17} aria-hidden="true" />
-        <Typography variant="small" muted>Checking for a cached summary...</Typography>
+        <Typography variant="small" muted>
+          Assembling the mail thread and checking for a cached summary...
+        </Typography>
       </section>
     );
   }
@@ -1146,7 +1258,8 @@ function ThreadSummaryPanel({
           <div>
             <Typography as="h3" variant="heading">Review AI data</Typography>
             <Typography variant="caption" muted>
-              YuMail will send only this message projection after you confirm.
+              YuMail will send {privacyReview.messageCount} message
+              {privacyReview.messageCount === 1 ? "" : "s"} only after you confirm.
             </Typography>
           </div>
           <Tag tone="warning">Manual action</Tag>
@@ -1173,8 +1286,35 @@ function ThreadSummaryPanel({
         <div>
           <Typography variant="small">Generating summary</Typography>
           <Typography variant="caption" muted>
-            The configured provider is processing the approved message projection.
+            The configured provider is processing the approved thread projection.
           </Typography>
+        </div>
+      </section>
+    );
+  }
+
+  if (status === "clearing") {
+    return (
+      <section className="summary-panel summary-panel--loading" aria-live="polite">
+        <Trash2 size={17} aria-hidden="true" />
+        <Typography variant="small" muted>Deleting cached AI summaries...</Typography>
+      </section>
+    );
+  }
+
+  if (status === "cleared") {
+    return (
+      <section className="summary-panel" role="status">
+        <div className="summary-heading">
+          <div>
+            <Typography as="h3" variant="heading">AI cache updated</Typography>
+            <Typography variant="caption" muted>
+              {notice ?? "Cached summaries deleted."}
+            </Typography>
+          </div>
+          <Button size="sm" variant="secondary" onClick={onSummarize}>
+            Summarize
+          </Button>
         </div>
       </section>
     );
@@ -1213,14 +1353,28 @@ function ThreadSummaryPanel({
           <Typography variant="caption" muted>
             {result.source === "cache" ? "Cached result" : "Generated now"}
             {" · "}
+            {result.messageCount} message{result.messageCount === 1 ? "" : "s"}
+            {" · "}
+            {formatSummaryContextSource(result.contextSource)}
+            {" · "}
             {result.record.model}
             {" · "}
             prompt {result.record.promptVersion}
           </Typography>
         </div>
-        <Button size="sm" variant="ghost" onClick={onRegenerate}>
-          Regenerate
-        </Button>
+        <div className="summary-cache-actions">
+          <IconButton
+            label="Delete cached summary"
+            size="sm"
+            variant="ghost"
+            onClick={onDeleteCached}
+          >
+            <Trash2 size={15} aria-hidden="true" />
+          </IconButton>
+          <Button size="sm" variant="ghost" onClick={onRegenerate}>
+            Regenerate
+          </Button>
+        </div>
       </div>
       <div className="summary-content">
         <div>
@@ -1241,6 +1395,16 @@ function ThreadSummaryPanel({
           title="Attachment notes"
           items={result.summary.attachmentNotes ?? []}
         />
+      </div>
+      <div className="summary-cache-footer">
+        <Typography variant="caption" muted>
+          {context?.source === "single-message"
+            ? "Provider thread context was unavailable; this is a single-message summary."
+            : "This summary is cached for the assembled thread."}
+        </Typography>
+        <Button size="sm" variant="ghost" onClick={onClearAccount}>
+          Clear account summaries
+        </Button>
       </div>
     </section>
   );
@@ -2155,6 +2319,19 @@ function formatDraftSaveStatus(status: DraftSaveStatus): string {
       return "Needs attention";
     default:
       return "Local draft";
+  }
+}
+
+function formatSummaryContextSource(
+  source: LoadThreadDetailResult["source"]
+): string {
+  switch (source) {
+    case "provider":
+      return "provider thread";
+    case "cache":
+      return "cached thread";
+    default:
+      return "single message";
   }
 }
 

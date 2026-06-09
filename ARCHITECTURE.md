@@ -81,7 +81,7 @@ requests, open SQLite, or access the operating system credential manager.
 
 Milestone 5A adds `ThreadSummaryService`, which owns:
 
-- privacy-review metadata for the selected message.
+- privacy-review metadata for the assembled thread or selected-message fallback.
 - prompt input projection and SHA-256 input hashing.
 - default provider and secure API-key lookup.
 - cache-first summary reads and explicit provider execution.
@@ -90,6 +90,12 @@ Milestone 5A adds `ThreadSummaryService`, which owns:
 Opening a message may query the summary repository, but it never triggers an AI request.
 Only the confirmed `summarizeThread` service call can access the API key and provider.
 React displays service results and never builds prompts or AI HTTP payloads.
+
+Milestone 5B extends `ThreadReadingService` with provider-backed thread loading. It asks
+`MailProvider.getThread` for the selected message's provider thread, persists the
+normalized result, and returns provider, cache, or single-message fallback source
+metadata. Summary cache deletion and account-wide summary clearing remain
+`ThreadSummaryService` operations backed by `AiSummaryRepository`.
 
 ### `packages/mail`
 
@@ -105,6 +111,10 @@ Current provider surfaces:
 The UI must consume normalized YuMail models, not protocol-specific JMAP or IMAP data.
 JMAP `Email/get` body structures and values are normalized into `MessageDetail`,
 `MessageBodyPart`, and `Attachment` models before they leave this package.
+
+Milestone 5B implements JMAP thread assembly with `Thread/get` followed by one
+`Email/get` for the returned `emailIds`. Messages are normalized with the existing
+detail path and sorted chronologically before leaving `packages/mail`.
 
 JMAP session discovery is generic and domain-agnostic. `JmapProvider` accepts a domain,
 base URL, well-known URL, or direct session URL. It normalizes missing schemes to
@@ -165,15 +175,16 @@ The connection test never receives email content. Diagnostics omit response bodi
 request headers, and exception text so an endpoint cannot echo a secret into UI state or
 logs. Manual model entry remains available when `/models` is unsupported.
 
-Milestone 5A adds the versioned `summarize-thread` prompt (`1.0.0`) and structured
-completion support. The prompt template owns its id, version, system instruction, user
-payload builder, and output normalizer. Its system instruction treats email fields as
-untrusted data and forbids following embedded instructions or inferring attachment
-contents.
+Milestone 5A adds the initial versioned prompt and Milestone 5B advances
+`summarize-thread` to `2.0.0` for ordered multi-message input. The prompt template owns
+its id, version, system instruction, user payload builder, and output normalizer. Its
+system instruction treats email fields as untrusted data and forbids following embedded
+instructions or inferring attachment contents.
 
-The summary projection contains subject, sender, To/Cc recipients, date, visible
-plain-text body or snippet, and attachment filename/type/size. It never contains raw
-HTML, Bcc recipients, remote image URLs, attachment contents, provider attachment
+The summary projection contains an ordered message array with subject, sender, To/Cc
+recipients, date, visible plain-text body or snippet, and attachment filename/type/size.
+HTTP(S) URLs in text are redacted. It never contains raw HTML, Bcc recipients, remote
+image URLs, attachment contents, provider attachment
 identifiers, credentials, or hidden renderer state. The provider requests a JSON object
 from `POST {baseUrl}/chat/completions`; response content is validated before it crosses
 into core persistence.
@@ -200,6 +211,7 @@ Repository ports are split by responsibility:
 - `MailboxRepository`
 - `MessageRepository`
 - `MessageDetailRepository`
+- `ThreadRepository`
 - `SyncStateRepository`
 - `DraftRepository`
 - `UserPreferenceRepository`
@@ -234,8 +246,14 @@ Milestone 5A adds migration 0008 and `SqliteAiSummaryRepository`. Summary rows a
 by account/message plus provider, model, prompt id/version, and a hash of the exact
 privacy-safe prompt input. The row stores structured JSON and normalized display text,
 not the API key or raw prompt. Migration 0008 also registers the code-owned prompt
-id/version in `prompt_versions`. The current single-message reading path leaves
-`thread_id` null until provider-backed thread assembly supplies an internal thread row.
+id/version in `prompt_versions`. Single-message fallback records leave `thread_id`
+null and use `message_id`.
+
+Milestone 5B persists normalized thread rows and links cached message details to their
+internal thread ID. Migration 0009 registers prompt version `2.0.0`. Thread summaries
+use `thread_id` cache scope across every selected message in that thread; fallback
+summaries use `message_id`. Repository controls can delete one context or every summary
+for an account without touching provider settings or credentials.
 
 Desktop runtime persistence uses `SqliteMailMetadataRepository` through the platform
 database adapter. React components do not open SQLite directly.
@@ -308,7 +326,7 @@ depend on WebView/browser CORS policy. Redirect policy and auth forwarding remai
 
 ### Desktop Database Initialization
 
-Rust registers migrations 0001 through 0008 with the SQL plugin for
+Rust registers migrations 0001 through 0009 with the SQL plugin for
 `sqlite:yumail.sqlite3`. The plugin applies pending migrations when the desktop database
 is first loaded during service startup.
 

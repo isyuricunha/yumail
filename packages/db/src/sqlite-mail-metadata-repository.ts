@@ -7,7 +7,8 @@ import type {
   Message,
   MessageBodyPart,
   MessageDetail,
-  Recipient
+  Recipient,
+  ThreadDetail
 } from "@yumail/mail";
 import { SYSTEM_TAGS } from "@yumail/shared";
 import type { EntityId, ProviderType, SystemTag } from "@yumail/shared";
@@ -72,6 +73,18 @@ interface MessageRow {
   is_flagged: number;
   is_answered: number;
   has_attachments: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ThreadRow {
+  id: string;
+  account_id: string;
+  provider_thread_id: string;
+  subject: string;
+  latest_message_at: string;
+  message_count: number;
+  is_unread: number;
   created_at: string;
   updated_at: string;
 }
@@ -545,6 +558,108 @@ implements MailMetadataRepository, UserPreferenceRepository {
       bodyHtml: bodyRow.body_html_raw ?? undefined,
       bodyParts: parseJsonArray<MessageBodyPart>(bodyRow.body_parts_json),
       attachments: attachmentRows.map(mapAttachment)
+    };
+  }
+
+  async saveThreadDetail(threadDetail: ThreadDetail): Promise<void> {
+    const database = await this.getDatabase();
+
+    await database.execute(`
+      INSERT INTO threads (
+        id,
+        account_id,
+        provider_thread_id,
+        subject,
+        latest_message_at,
+        message_count,
+        is_unread,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        account_id = excluded.account_id,
+        provider_thread_id = excluded.provider_thread_id,
+        subject = excluded.subject,
+        latest_message_at = excluded.latest_message_at,
+        message_count = excluded.message_count,
+        is_unread = excluded.is_unread,
+        updated_at = excluded.updated_at
+    `, [
+      threadDetail.id,
+      threadDetail.accountId,
+      threadDetail.providerThreadId,
+      threadDetail.subject,
+      threadDetail.latestMessageAt,
+      threadDetail.messageCount,
+      toInteger(threadDetail.isUnread),
+      threadDetail.createdAt,
+      threadDetail.updatedAt
+    ]);
+
+    await database.execute(
+      "UPDATE messages SET thread_id = NULL WHERE thread_id = ?",
+      [threadDetail.id]
+    );
+
+    for (const message of threadDetail.messages) {
+      await this.saveMessageDetail(message);
+      await database.execute(
+        "UPDATE messages SET thread_id = ? WHERE id = ?",
+        [threadDetail.id, message.id]
+      );
+    }
+  }
+
+  async getThreadDetail(
+    accountId: EntityId,
+    providerThreadId: string
+  ): Promise<ThreadDetail | undefined> {
+    const database = await this.getDatabase();
+    const [threadRow] = await database.select<ThreadRow>(`
+      SELECT
+        id,
+        account_id,
+        provider_thread_id,
+        subject,
+        latest_message_at,
+        message_count,
+        is_unread,
+        created_at,
+        updated_at
+      FROM threads
+      WHERE account_id = ? AND provider_thread_id = ?
+      LIMIT 1
+    `, [accountId, providerThreadId]);
+
+    if (!threadRow) {
+      return undefined;
+    }
+
+    const messageRows = await database.select<MessageRow>(`
+      ${MESSAGE_SELECT}
+      WHERE thread_id = ?
+      ORDER BY date ASC, provider_message_id ASC
+    `, [threadRow.id]);
+    const messages = (await Promise.all(
+      messageRows.map((row) => this.getMessageDetail(accountId, row.provider_message_id))
+    )).filter((message): message is MessageDetail => Boolean(message));
+
+    if (messages.length === 0) {
+      return undefined;
+    }
+
+    return {
+      id: threadRow.id,
+      accountId: threadRow.account_id,
+      providerThreadId: threadRow.provider_thread_id,
+      subject: threadRow.subject,
+      participants: collectThreadParticipants(messages),
+      messageCount: messages.length,
+      latestMessageAt: threadRow.latest_message_at,
+      isUnread: fromInteger(threadRow.is_unread),
+      createdAt: threadRow.created_at,
+      updatedAt: threadRow.updated_at,
+      messages
     };
   }
 
@@ -1029,6 +1144,27 @@ function mapRecipients(
       name: row.name ?? undefined,
       address: row.address
     }));
+}
+
+function collectThreadParticipants(messages: MessageDetail[]): Recipient[] {
+  const participants = new Map<string, Recipient>();
+
+  for (const message of messages) {
+    for (const recipient of [message.from, ...message.to, ...message.cc]) {
+      const address = recipient.address.trim();
+
+      if (!address) {
+        continue;
+      }
+
+      participants.set(address.toLowerCase(), {
+        ...(recipient.name?.trim() ? { name: recipient.name.trim() } : {}),
+        address
+      });
+    }
+  }
+
+  return [...participants.values()];
 }
 
 function mapLocalDraft(row: LocalDraftRow): LocalDraft {

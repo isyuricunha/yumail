@@ -31,7 +31,8 @@ import type {
   MessageDetail,
   MailProvider,
   Recipient,
-  SendMessageResult
+  SendMessageResult,
+  ThreadDetail
 } from "@yumail/mail";
 import { JmapProvider, resolveProviderMessageId } from "@yumail/mail";
 import type { EntityId, IsoDateTime } from "@yumail/shared";
@@ -139,6 +140,7 @@ export interface CreateAiProviderSettingsServiceInput {
 }
 
 export interface SummaryPrivacyReview {
+  messageCount: number;
   included: string[];
   excluded: string[];
 }
@@ -147,17 +149,23 @@ export interface ThreadSummaryResult {
   summary: ThreadSummary;
   record: AiSummaryRecord;
   source: "cache" | "provider";
+  messageCount: number;
+  contextSource: LoadThreadDetailResult["source"];
 }
 
-export interface SummarizeMessageInput {
-  messageDetail: MessageDetail;
+export interface SummarizeThreadServiceInput {
+  context: LoadThreadDetailResult;
   forceRefresh?: boolean;
 }
 
 export interface ThreadSummaryService {
-  getPrivacyReview(messageDetail: MessageDetail): SummaryPrivacyReview;
-  loadCachedSummary(messageDetail: MessageDetail): Promise<ThreadSummaryResult | undefined>;
-  summarizeThread(input: SummarizeMessageInput): Promise<ThreadSummaryResult>;
+  getPrivacyReview(context: LoadThreadDetailResult): SummaryPrivacyReview;
+  loadCachedSummary(
+    context: LoadThreadDetailResult
+  ): Promise<ThreadSummaryResult | undefined>;
+  summarizeThread(input: SummarizeThreadServiceInput): Promise<ThreadSummaryResult>;
+  deleteCachedSummary(context: LoadThreadDetailResult): Promise<number>;
+  clearAccountSummaries(accountId: EntityId): Promise<number>;
 }
 
 export interface CreateThreadSummaryServiceInput {
@@ -178,6 +186,18 @@ export interface LoadMessageDetailResult {
 
 export interface ThreadReadingService {
   loadMessageDetail(input: LoadMessageDetailInput): Promise<LoadMessageDetailResult>;
+  loadThreadDetail(input: LoadThreadDetailInput): Promise<LoadThreadDetailResult>;
+}
+
+export interface LoadThreadDetailInput {
+  messageDetail: MessageDetail;
+  forceRefresh?: boolean;
+}
+
+export interface LoadThreadDetailResult {
+  threadDetail: ThreadDetail;
+  selectedMessageId: EntityId;
+  source: "provider" | "cache" | "single-message";
 }
 
 export interface CreateDraftInput {
@@ -702,18 +722,21 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
     this.provider = new OpenAiCompatibleProvider(input.fetch);
   }
 
-  getPrivacyReview(messageDetail: MessageDetail): SummaryPrivacyReview {
-    const bodyDescription = messageDetail.bodyText?.trim()
-      ? "Visible plain-text message body"
-      : "Visible message snippet because no plain-text body is available";
+  getPrivacyReview(context: LoadThreadDetailResult): SummaryPrivacyReview {
+    const { messages } = context.threadDetail;
+    const plainTextCount = messages.filter((message) => message.bodyText?.trim()).length;
+    const snippetCount = messages.length - plainTextCount;
 
     return {
+      messageCount: messages.length,
       included: [
-        "Subject, sender, To/Cc recipients, and message date",
-        bodyDescription,
-        messageDetail.attachments.length > 0
-          ? `File name, content type, and size for ${messageDetail.attachments.length} attachment${messageDetail.attachments.length === 1 ? "" : "s"}`
-          : "No attachment metadata because this message has no attachments"
+        `${messages.length} message${messages.length === 1 ? "" : "s"} in chronological order`,
+        "Subject, sender, To/Cc recipients, and date for each message",
+        `${plainTextCount} visible plain-text bod${plainTextCount === 1 ? "y" : "ies"}`
+          + (snippetCount > 0
+            ? ` and ${snippetCount} visible snippet fallback${snippetCount === 1 ? "" : "s"}`
+            : ""),
+        "Attachment file name, content type, and available size only"
       ],
       excluded: [
         "Raw or hidden HTML",
@@ -726,7 +749,7 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
   }
 
   async loadCachedSummary(
-    messageDetail: MessageDetail
+    context: LoadThreadDetailResult
   ): Promise<ThreadSummaryResult | undefined> {
     const configuration = await this.providerRepository.getDefaultAiProvider();
 
@@ -734,21 +757,23 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
       return undefined;
     }
 
-    const preparedSummary = await this.prepareSummary(messageDetail, configuration);
+    const preparedSummary = await this.prepareSummary(context, configuration);
     const record = await this.summaryRepository.getCachedSummary(preparedSummary.cacheKey);
 
     return record
       ? {
         summary: record.summary,
         record,
-        source: "cache"
+        source: "cache",
+        messageCount: context.threadDetail.messages.length,
+        contextSource: context.source
       }
       : undefined;
   }
 
-  async summarizeThread(input: SummarizeMessageInput): Promise<ThreadSummaryResult> {
+  async summarizeThread(input: SummarizeThreadServiceInput): Promise<ThreadSummaryResult> {
     const configuration = await this.requireEnabledProvider();
-    const preparedSummary = await this.prepareSummary(input.messageDetail, configuration);
+    const preparedSummary = await this.prepareSummary(input.context, configuration);
     const cachedRecord = await this.summaryRepository.getCachedSummary(
       preparedSummary.cacheKey
     );
@@ -757,7 +782,9 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
       return {
         summary: cachedRecord.summary,
         record: cachedRecord,
-        source: "cache"
+        source: "cache",
+        messageCount: input.context.threadDetail.messages.length,
+        contextSource: input.context.source
       };
     }
 
@@ -792,16 +819,18 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
     const now = toIsoDateTime();
     const record: AiSummaryRecord = {
       id: createStableEntityId("ai-summary", [
-        input.messageDetail.accountId,
-        input.messageDetail.id,
+        input.context.threadDetail.accountId,
+        preparedSummary.scopeId,
         configuration.id,
         configuration.model,
         summarizeThreadPrompt.id,
         summarizeThreadPrompt.version,
         preparedSummary.inputHash
       ]),
-      accountId: input.messageDetail.accountId,
-      messageId: input.messageDetail.id,
+      accountId: input.context.threadDetail.accountId,
+      ...(preparedSummary.threadId
+        ? { threadId: preparedSummary.threadId }
+        : { messageId: input.context.selectedMessageId }),
       providerId: configuration.id,
       model: configuration.model,
       promptId: summarizeThreadPrompt.id,
@@ -818,26 +847,48 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
     return {
       summary,
       record,
-      source: "provider"
+      source: "provider",
+      messageCount: input.context.threadDetail.messages.length,
+      contextSource: input.context.source
     };
   }
 
+  deleteCachedSummary(context: LoadThreadDetailResult): Promise<number> {
+    return this.summaryRepository.deleteSummariesForContext(
+      createSummaryCacheScope(context)
+    );
+  }
+
+  clearAccountSummaries(accountId: EntityId): Promise<number> {
+    return this.summaryRepository.deleteSummariesForAccount(accountId);
+  }
+
   private async prepareSummary(
-    messageDetail: MessageDetail,
+    context: LoadThreadDetailResult,
     configuration: AiProviderConfiguration
   ): Promise<{
     cacheKey: AiSummaryCacheKey;
     inputHash: string;
+    scopeId: EntityId;
+    threadId?: EntityId;
     userPrompt: string;
   }> {
-    const promptInput = createSummarizeThreadPromptInput(messageDetail);
+    const promptInput = createSummarizeThreadPromptInput(context.threadDetail);
     const userPrompt = summarizeThreadPrompt.buildUserPrompt(promptInput);
     const inputHash = await createSha256Hash(userPrompt);
+    const cacheScope = createSummaryCacheScope(context);
+    const scopeId = cacheScope.threadId ?? cacheScope.messageId;
+
+    if (!scopeId) {
+      throw new YuMailError({
+        code: "ai_summary_scope_missing",
+        message: "The selected message does not have a valid AI summary cache scope."
+      });
+    }
 
     return {
       cacheKey: {
-        accountId: messageDetail.accountId,
-        messageId: messageDetail.id,
+        ...cacheScope,
         providerId: configuration.id,
         model: configuration.model,
         promptId: summarizeThreadPrompt.id,
@@ -845,6 +896,8 @@ class DefaultThreadSummaryService implements ThreadSummaryService {
         inputHash
       },
       inputHash,
+      scopeId,
+      threadId: cacheScope.threadId,
       userPrompt
     };
   }
@@ -960,6 +1013,93 @@ class DefaultThreadReadingService implements ThreadReadingService {
       messageDetail,
       source: "provider"
     };
+  }
+
+  async loadThreadDetail(input: LoadThreadDetailInput): Promise<LoadThreadDetailResult> {
+    const selectedMessage = input.messageDetail;
+    const providerThreadId = selectedMessage.providerThreadId;
+
+    if (!providerThreadId) {
+      return createSingleMessageThreadResult(selectedMessage);
+    }
+
+    const cachedThread = await this.metadataRepository.getThreadDetail(
+      selectedMessage.accountId,
+      providerThreadId
+    );
+
+    if (cachedThread && !input.forceRefresh) {
+      return {
+        threadDetail: cachedThread,
+        selectedMessageId: selectedMessage.id,
+        source: "cache"
+      };
+    }
+
+    try {
+      const accountConfigs = await this.metadataRepository.listAccountConfigs();
+      const accountConfig = accountConfigs.find(
+        (candidate) => candidate.account.id === selectedMessage.accountId
+      );
+
+      if (!accountConfig) {
+        return cachedThread
+          ? {
+            threadDetail: cachedThread,
+            selectedMessageId: selectedMessage.id,
+            source: "cache"
+          }
+          : createSingleMessageThreadResult(selectedMessage);
+      }
+
+      const secret = await this.secretStorage.getSecret(accountConfig.credentialReference);
+
+      if (!secret) {
+        return cachedThread
+          ? {
+            threadDetail: cachedThread,
+            selectedMessageId: selectedMessage.id,
+            source: "cache"
+          }
+          : createSingleMessageThreadResult(selectedMessage);
+      }
+
+      const provider = new JmapProvider({
+        localAccountId: accountConfig.account.id,
+        emailAddress: accountConfig.account.emailAddress,
+        baseUrl: accountConfig.jmapBaseUrl,
+        authSecret: secret,
+        authMode: accountConfig.authMode,
+        authUsername: accountConfig.authUsername,
+        jmapAccountId: accountConfig.jmapAccountId,
+        fetch: this.fetchImpl
+      });
+      const threadDetail = await provider.getThread({
+        accountId: selectedMessage.accountId,
+        threadId: createStableEntityId("thread", [
+          selectedMessage.accountId,
+          providerThreadId
+        ]),
+        providerThreadId,
+        mailboxId: selectedMessage.mailboxId
+      });
+
+      await this.metadataRepository.saveThreadDetail(threadDetail);
+
+      return {
+        threadDetail,
+        selectedMessageId: selectedMessage.id,
+        source: "provider"
+      };
+    } catch {
+      return cachedThread
+        ? {
+          threadDetail: cachedThread,
+          selectedMessageId: selectedMessage.id,
+          source: "cache"
+        }
+        : createSingleMessageThreadResult(selectedMessage);
+    }
   }
 }
 
@@ -1358,6 +1498,66 @@ function isValidEmailAddress(value: string): boolean {
 
 function normalizeJmapAccountAuthMode(value: JmapAuthMode | undefined): JmapAuthMode {
   return value === "bearer" ? "bearer" : "basic";
+}
+
+function createSingleMessageThreadResult(
+  messageDetail: MessageDetail
+): LoadThreadDetailResult {
+  return {
+    threadDetail: {
+      id: messageDetail.id,
+      accountId: messageDetail.accountId,
+      providerThreadId: messageDetail.providerThreadId
+        ?? messageDetail.providerMessageId,
+      subject: messageDetail.subject,
+      participants: collectVisibleParticipants([messageDetail]),
+      messageCount: 1,
+      latestMessageAt: messageDetail.date,
+      isUnread: !messageDetail.isRead,
+      createdAt: messageDetail.createdAt,
+      updatedAt: messageDetail.updatedAt,
+      messages: [messageDetail]
+    },
+    selectedMessageId: messageDetail.id,
+    source: "single-message"
+  };
+}
+
+function createSummaryCacheScope(context: LoadThreadDetailResult): {
+  accountId: EntityId;
+  messageId?: EntityId;
+  threadId?: EntityId;
+} {
+  return context.source === "single-message"
+    ? {
+      accountId: context.threadDetail.accountId,
+      messageId: context.selectedMessageId
+    }
+    : {
+      accountId: context.threadDetail.accountId,
+      threadId: context.threadDetail.id
+    };
+}
+
+function collectVisibleParticipants(messages: MessageDetail[]): Recipient[] {
+  const participants = new Map<string, Recipient>();
+
+  for (const message of messages) {
+    for (const recipient of [message.from, ...message.to, ...message.cc]) {
+      const address = recipient.address.trim();
+
+      if (!address) {
+        continue;
+      }
+
+      participants.set(address.toLowerCase(), {
+        ...(recipient.name?.trim() ? { name: recipient.name.trim() } : {}),
+        address
+      });
+    }
+  }
+
+  return [...participants.values()];
 }
 
 async function createSha256Hash(value: string): Promise<string> {

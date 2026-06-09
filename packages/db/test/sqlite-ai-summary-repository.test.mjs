@@ -144,16 +144,16 @@ test("registers the AI summary cache migration", async () => {
     SELECT action, version
     FROM prompt_versions
     WHERE id = ?
-  `).get("prompt:summarize-thread:1.0.0");
+  `).get("prompt:summarize-thread:2.0.0");
 
-  assert.equal(INITIAL_SCHEMA_VERSION, 8);
+  assert.equal(INITIAL_SCHEMA_VERSION, 9);
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8]
+    [1, 2, 3, 4, 5, 6, 7, 8, 9]
   );
-  assert.equal(migrations.at(-1).name, "ai_thread_summaries");
+  assert.equal(migrations.at(-1).name, "thread_summary_prompt_v2");
   assert.equal(promptVersion.action, "summarize-thread");
-  assert.equal(promptVersion.version, "1.0.0");
+  assert.equal(promptVersion.version, "2.0.0");
   database.close();
 });
 
@@ -222,6 +222,21 @@ test("persists and reloads versioned AI summaries without API keys", async () =>
     assert.equal(row.prompt_version, "1.0.0");
     assert.equal(row.summary_text, record.summaryText);
     assert.deepEqual(JSON.parse(row.output_json), record.summary);
+
+    assert.equal(
+      await secondRepository.deleteSummariesForContext({
+        accountId: record.accountId,
+        messageId: record.messageId
+      }),
+      1
+    );
+    assert.equal(await secondRepository.getCachedSummary(cacheKey), undefined);
+    await secondRepository.saveSummary(record);
+    assert.equal(
+      await secondRepository.deleteSummariesForAccount(record.accountId),
+      1
+    );
+    assert.equal(await secondRepository.getCachedSummary(cacheKey), undefined);
     secondDatabase.close();
 
     const databaseContents = await readFile(databasePath);
@@ -229,4 +244,80 @@ test("persists and reloads versioned AI summaries without API keys", async () =>
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("uses the internal thread id for thread summary cache controls", async () => {
+  const database = new DatabaseSync(":memory:");
+  await applyRegisteredMigrations(database);
+  insertDependencies(database);
+  const timestamp = "2026-06-09T12:00:00.000Z";
+  database.prepare(`
+    INSERT INTO threads (
+      id,
+      account_id,
+      provider_thread_id,
+      subject,
+      latest_message_at,
+      message_count,
+      is_unread,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "thread:1",
+    "account:1",
+    "provider-thread-1",
+    "Launch plan",
+    timestamp,
+    2,
+    0,
+    timestamp,
+    timestamp
+  );
+  const repository = new SqliteAiSummaryRepository(
+    async () => new NodeSqlDatabase(database)
+  );
+  const record = {
+    id: "ai-summary:thread:1",
+    accountId: "account:1",
+    threadId: "thread:1",
+    providerId: "ai-provider:default",
+    model: "summary-model",
+    promptId: "summarize-thread",
+    promptVersion: "2.0.0",
+    inputHash: "b".repeat(64),
+    summary: {
+      mainPoint: "The thread covers the launch.",
+      currentStatus: "Approved.",
+      decisions: [],
+      actionItems: [],
+      deadlines: [],
+      peopleInvolved: []
+    },
+    summaryText: "The thread covers the launch.",
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  const cacheKey = {
+    accountId: record.accountId,
+    threadId: record.threadId,
+    providerId: record.providerId,
+    model: record.model,
+    promptId: record.promptId,
+    promptVersion: record.promptVersion,
+    inputHash: record.inputHash
+  };
+
+  await repository.saveSummary(record);
+
+  assert.deepEqual(await repository.getCachedSummary(cacheKey), record);
+  assert.equal(
+    await repository.deleteSummariesForContext({
+      accountId: record.accountId,
+      threadId: record.threadId
+    }),
+    1
+  );
+  assert.equal(await repository.getCachedSummary(cacheKey), undefined);
+  database.close();
 });

@@ -234,6 +234,14 @@ fn database_migrations() -> Vec<Migration> {
             sql: include_str!("../../../../packages/db/migrations/0008_ai_thread_summaries.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "thread_summary_prompt_v2",
+            sql: include_str!(
+                "../../../../packages/db/migrations/0009_thread_summary_prompt_v2.sql"
+            ),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -249,7 +257,7 @@ mod tests {
             .map(|migration| migration.version)
             .collect::<Vec<_>>();
 
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert!(migrations.iter().all(|migration| !migration.sql.is_empty()));
     }
 

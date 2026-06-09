@@ -262,9 +262,30 @@ Acceptance:
 Remaining hardening:
 
 - Verify summary generation against a live custom endpoint on Windows.
-- Add provider-backed multi-message thread assembly before claiming whole-thread
-  summarization.
-- Add user-facing AI cache deletion controls.
+
+## Milestone 5B - Thread Assembly And AI Cache Controls
+
+Status: implemented.
+
+- JMAP `Thread/get` membership lookup plus full `Email/get` detail assembly.
+- Chronological normalized thread messages with persisted local thread metadata.
+- Selected-message fallback when provider or cached thread context is unavailable.
+- `summarize-thread` prompt `2.0.0` with ordered multi-message payloads.
+- Thread-scoped deterministic summary cache with message-scoped fallback.
+- Privacy review with message count and explicit included/excluded fields.
+- Delete-current and clear-account summary cache controls.
+
+Acceptance:
+
+- Any selected message in an assembled thread resolves the same thread cache scope.
+- Thread content changes produce a different input hash.
+- Cache deletion never deletes mail, provider settings, or credentials.
+
+Remaining hardening:
+
+- Verify multi-message assembly and summary generation against live Stalwart and AI
+  endpoints on Windows.
+- Add explicit thread-size/token limits before supporting very large conversations.
 
 ## Milestone 5 - AI Actions
 

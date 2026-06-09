@@ -169,6 +169,8 @@ export interface GetMessageInput {
 export interface GetThreadInput {
   accountId: EntityId;
   threadId: EntityId;
+  providerThreadId?: string;
+  mailboxId?: EntityId;
 }
 
 export interface SendMessageInput {
@@ -513,6 +515,25 @@ function createMessageEntityId(accountId: EntityId, providerMessageId: string): 
   return `${accountId}:message:${encodeURIComponent(providerMessageId)}`;
 }
 
+function createThreadEntityId(accountId: EntityId, providerThreadId: string): EntityId {
+  return `${accountId}:thread:${encodeURIComponent(providerThreadId)}`;
+}
+
+function resolveProviderThreadId(input: GetThreadInput): string {
+  if (input.providerThreadId) {
+    return input.providerThreadId;
+  }
+
+  const marker = ":thread:";
+  const markerIndex = input.threadId.indexOf(marker);
+
+  if (markerIndex === -1) {
+    return input.threadId;
+  }
+
+  return decodeURIComponent(input.threadId.slice(markerIndex + marker.length));
+}
+
 function writeRecipient(recipient: Recipient): Record<string, string> {
   return {
     ...(recipient.name ? { name: recipient.name } : {}),
@@ -670,6 +691,79 @@ function collectBodyValue(
     .filter((value): value is string => Boolean(value));
 
   return values.length > 0 ? values.join("\n") : undefined;
+}
+
+function createMessageDetailGetArguments(): Record<string, unknown> {
+  return {
+    properties: [
+      "id",
+      "blobId",
+      "mailboxIds",
+      "threadId",
+      "messageId",
+      "from",
+      "to",
+      "cc",
+      "bcc",
+      "replyTo",
+      "inReplyTo",
+      "references",
+      "subject",
+      "receivedAt",
+      "sentAt",
+      "preview",
+      "keywords",
+      "hasAttachment",
+      "bodyStructure",
+      "bodyValues",
+      "textBody",
+      "htmlBody",
+      "attachments"
+    ],
+    bodyProperties: [
+      "partId",
+      "blobId",
+      "size",
+      "name",
+      "type",
+      "charset",
+      "disposition",
+      "cid",
+      "language",
+      "location"
+    ],
+    fetchTextBodyValues: true,
+    fetchHTMLBodyValues: true,
+    maxBodyValueBytes: 2_000_000
+  };
+}
+
+function compareMessagesChronologically(left: MessageDetail, right: MessageDetail): number {
+  const dateComparison = left.date.localeCompare(right.date);
+  return dateComparison !== 0
+    ? dateComparison
+    : left.providerMessageId.localeCompare(right.providerMessageId);
+}
+
+function collectThreadParticipants(messages: MessageDetail[]): Recipient[] {
+  const participants = new Map<string, Recipient>();
+
+  for (const message of messages) {
+    for (const recipient of [message.from, ...message.to, ...message.cc]) {
+      const address = recipient.address.trim();
+
+      if (!address) {
+        continue;
+      }
+
+      participants.set(address.toLowerCase(), {
+        ...(recipient.name?.trim() ? { name: recipient.name.trim() } : {}),
+        address
+      });
+    }
+  }
+
+  return [...participants.values()];
 }
 
 function uniqueBodyParts(parts: Record<string, unknown>[]): Record<string, unknown>[] {
@@ -1197,46 +1291,7 @@ export class JmapProvider extends PlaceholderMailProvider {
         {
           accountId: connectionInfo.jmapAccountId,
           ids: [providerMessageId],
-          properties: [
-            "id",
-            "blobId",
-            "mailboxIds",
-            "threadId",
-            "messageId",
-            "from",
-            "to",
-            "cc",
-            "bcc",
-            "replyTo",
-            "inReplyTo",
-            "references",
-            "subject",
-            "receivedAt",
-            "sentAt",
-            "preview",
-            "keywords",
-            "hasAttachment",
-            "bodyStructure",
-            "bodyValues",
-            "textBody",
-            "htmlBody",
-            "attachments"
-          ],
-          bodyProperties: [
-            "partId",
-            "blobId",
-            "size",
-            "name",
-            "type",
-            "charset",
-            "disposition",
-            "cid",
-            "language",
-            "location"
-          ],
-          fetchTextBodyValues: true,
-          fetchHTMLBodyValues: true,
-          maxBodyValueBytes: 2_000_000
+          ...createMessageDetailGetArguments()
         },
         "message-detail"
       ]
@@ -1252,6 +1307,86 @@ export class JmapProvider extends PlaceholderMailProvider {
     }
 
     return this.normalizeMessageDetail(email, input.mailboxId);
+  }
+
+  override async getThread(input: GetThreadInput): Promise<ThreadDetail> {
+    if (input.accountId !== this.localAccountId) {
+      throw new YuMailError({
+        code: "jmap_account_mismatch",
+        message: "The requested thread account does not match the JMAP provider account."
+      });
+    }
+
+    const connectionInfo = await this.discoverSession();
+    const providerThreadId = resolveProviderThreadId(input);
+    const threadResponses = await this.callJmap([
+      [
+        "Thread/get",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          ids: [providerThreadId]
+        },
+        "thread"
+      ]
+    ]);
+    const threadResponse = getMethodResponse(threadResponses, "Thread/get", "thread");
+    const thread = Array.isArray(threadResponse.list)
+      ? threadResponse.list.find(isRecord)
+      : undefined;
+    const emailIds = thread ? getStringArray(thread, "emailIds") : [];
+
+    if (!thread || emailIds.length === 0) {
+      throw new YuMailError({
+        code: "jmap_thread_not_found",
+        message: "The requested JMAP thread was not found."
+      });
+    }
+
+    const emailResponses = await this.callJmap([
+      [
+        "Email/get",
+        {
+          accountId: connectionInfo.jmapAccountId,
+          ids: emailIds,
+          ...createMessageDetailGetArguments()
+        },
+        "thread-messages"
+      ]
+    ]);
+    const emailResponse = getMethodResponse(
+      emailResponses,
+      "Email/get",
+      "thread-messages"
+    );
+    const messages = (Array.isArray(emailResponse.list)
+      ? emailResponse.list.filter(isRecord)
+      : [])
+      .map((email) => this.normalizeMessageDetail(email, input.mailboxId))
+      .sort(compareMessagesChronologically);
+
+    if (messages.length === 0) {
+      throw new YuMailError({
+        code: "jmap_thread_messages_not_found",
+        message: "The JMAP thread did not contain readable messages."
+      });
+    }
+
+    const now = toIsoDateTime();
+    const latestMessage = messages.at(-1) ?? messages[0];
+
+    return {
+      id: createThreadEntityId(this.localAccountId, providerThreadId),
+      accountId: this.localAccountId,
+      providerThreadId,
+      subject: latestMessage?.subject ?? "(no subject)",
+      participants: collectThreadParticipants(messages),
+      messageCount: messages.length,
+      latestMessageAt: latestMessage?.date ?? now,
+      isUnread: messages.some((message) => !message.isRead),
+      createdAt: now,
+      updatedAt: now,
+      messages
+    };
   }
 
   override async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
